@@ -15,7 +15,7 @@ use ratatui::{
     Terminal,
 };
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute as cross_execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -260,11 +260,21 @@ fn get_github_token() -> Result<String> {
 
     println!("🔑 GITHUB_TOKEN not found in environment.");
     println!("Please enter a GitHub Personal Access Token (input will be hidden):");
+    io::stdout().flush()?;
 
     enable_raw_mode()?;
+    
+    // Drain any leftover events (like an Enter release from a previous command)
+    while event::poll(Duration::from_millis(0))? {
+        let _ = event::read();
+    }
+
     let mut token = String::new();
     loop {
         if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
             match key.code {
                 KeyCode::Enter => break,
                 KeyCode::Char(c) => token.push(c),
