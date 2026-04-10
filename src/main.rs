@@ -91,8 +91,51 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("🚀 Installing: {} v{}", manifest.app, manifest.version);
-            // TODO: Call Phase 3 logic (download_artifact and write to disk)
+            let source = manifest.find_source()
+                .context("No compatible binary found for your system (OS/Arch mismatch).")?;
+
+            println!("📥 Downloading {}...", manifest.app);
+            let binary_bytes = network::download_artifact(&source.url, &source.sha256).await?;
+
+            // 1. Resolve target directory
+            let mut target_dir_str = manifest.installation.target_dir.clone();
+            
+            // Feature: Use a centralized path on Windows if the manifest uses the default Unix style
+            #[cfg(windows)]
+            if target_dir_str == "~/.local/bin" {
+                target_dir_str = "C:\\onix".to_string();
+            }
+
+            // 2. Expand home directory (~)
+            if target_dir_str.starts_with('~') {
+                let home = if cfg!(windows) { std::env::var("USERPROFILE") } else { std::env::var("HOME") }
+                    .context("Failed to resolve home directory for path expansion")?;
+                target_dir_str = target_dir_str.replacen('~', &home, 1);
+            }
+
+            let target_dir = PathBuf::from(target_dir_str);
+            let target_path = target_dir.join(&manifest.installation.bin_name);
+
+            // 3. Create directory and write binary
+            std::fs::create_dir_all(&target_dir)
+                .with_context(|| format!("Failed to create directory {:?}", target_dir))?;
+                
+            std::fs::write(&target_path, binary_bytes)
+                .with_context(|| format!("Failed to write binary to {:?}", target_path))?;
+
+            // 4. Set executable permissions on Unix systems
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&target_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&target_path, perms)?;
+            }
+
+            println!("✅ Successfully installed {} to {:?}", manifest.app, target_path);
+            if let Some(msg) = &manifest.message {
+                println!("\n{}", msg);
+            }
         }
         Commands::Inspect { url } => {
             let resolved_url = network::resolve_url(url).await;

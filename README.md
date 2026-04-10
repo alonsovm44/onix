@@ -6,9 +6,9 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#)
 
 
-# One-line explanation
+# One-liner
 
-Onix automates the manual binary install process—adding verification, consistency, and explicit permissions, without executing remote scripts.
+>Onix lets you preview, verify, and approve every system change before installing any CLI tool.
 
 ## The Problem
 Installing a new standalone CLI tool today usually involves one of two extremes:

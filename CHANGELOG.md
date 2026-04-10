@@ -2,6 +2,7 @@
 
 Added:
 
+- added tui for install
 - added support for main and master naming conventions
 - added tui for inspect
 - added ratatui tui 

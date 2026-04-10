@@ -40,21 +40,35 @@ fn run_app<B: ratatui::backend::Backend>(
     manifest: OnixManifest,
     interactive: bool,
 ) -> io::Result<bool> {
+    let mut show_details = false;
+
     loop {
-        terminal.draw(|f| ui(f, &manifest, interactive))?;
+        terminal.draw(|f| ui(f, &manifest, interactive, show_details))?;
 
         if let Event::Key(key) = event::read()? {
+            // Filter for Press events to prevent double-toggle flicker on Windows
+            if key.kind != event::KeyEventKind::Press {
+                continue;
+            }
+
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
+                // Rejection / Cancel
+                KeyCode::Char('q') | KeyCode::Char('n') | KeyCode::Esc => {
+                    return Ok(false)
+                }
+                // Confirmation
                 KeyCode::Char('y') if interactive => return Ok(true),
-                KeyCode::Char('n') if interactive => return Ok(false),
+                // Detail toggle
+                KeyCode::Char('d') => {
+                    show_details = !show_details;
+                }
                 _ => {}
             }
         }
     }
 }
 
-fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest, interactive: bool) {
+fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest, interactive: bool, show_details: bool) {
     let size = f.size();
     
     // Ensure terminal is large enough
@@ -92,15 +106,31 @@ fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest, interactive: bool) {
         Line::from(vec![Span::styled("Target Directory: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(&manifest.installation.target_dir)]),
         Line::from(vec![Span::styled("Binary Name:      ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(&manifest.installation.bin_name)]),
         Line::from(""),
-        Line::from(Span::styled("Supported Platforms:", Style::default().fg(Color::Yellow))),
     ];
 
-    for source in &manifest.install_on {
-        install_text.push(Line::from(format!(" • {} ({})", source.os, source.arch)));
+    if show_details {
+        install_text.push(Line::from(Span::styled("Selected Artifact Source:", Style::default().fg(Color::Yellow))));
+        if let Some(source) = manifest.find_source() {
+            install_text.push(Line::from(vec![
+                Span::styled("  URL:  ", Style::default().fg(Color::Cyan)),
+                Span::raw(&source.url),
+            ]));
+            install_text.push(Line::from(vec![
+                Span::styled("  HASH: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&source.sha256),
+            ]));
+        } else {
+            install_text.push(Line::from("  (No artifact found for this system)"));
+        }
+    } else {
+        install_text.push(Line::from(Span::styled("Supported Platforms:", Style::default().fg(Color::Yellow))));
+        for source in &manifest.install_on {
+            install_text.push(Line::from(format!(" • {} ({})", source.os, source.arch)));
+        }
     }
 
     let install_info = Paragraph::new(install_text)
-        .block(Block::default().title(" Details ").borders(Borders::ALL))
+        .block(Block::default().title(if show_details { " Manifest Inspection " } else { " Details " }).borders(Borders::ALL))
         .wrap(Wrap { trim: true });
     f.render_widget(install_info, main_chunks[0]);
 
@@ -138,11 +168,13 @@ fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest, interactive: bool) {
     ];
 
     if interactive {
-        footer_spans.push(Span::styled("[Y] Accept & Install", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
-        footer_spans.push(Span::raw("   "));
-        footer_spans.push(Span::styled("[N] Reject", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+        footer_spans.push(Span::styled("[Y] Accept", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+        footer_spans.push(Span::raw("  "));
+        footer_spans.push(Span::styled("[N] Cancel", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+        footer_spans.push(Span::raw("  "));
+        footer_spans.push(Span::styled("[D] Details", Style::default().fg(Color::Yellow)));
     } else {
-        footer_spans.push(Span::styled("Press 'q' or 'Esc' to exit", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)));
+        footer_spans.push(Span::styled("Press [Q] or [Esc] to exit | [D] Details", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)));
     }
 
     let footer = Paragraph::new(Line::from(footer_spans))
