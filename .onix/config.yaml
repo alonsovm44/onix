@@ -1,0 +1,18 @@
+app:
+  name: onix
+  version: 1.0.0
+build:
+  entry: src/main.rs
+  command: cargo build --release
+install:
+  bin_name: onix
+  target_dir: ~/.local/bin
+permissions:
+- type: filesystem
+  action: write
+  path: ~/.local/bin
+  variable: null
+- type: environment
+  action: modify
+  path: null
+  variable: PATH

@@ -4,9 +4,37 @@ app: onix
 version: 1.0.0
 
 install-on:
-    - os: linux
-      arch: amd64
-      url: https://github.com/diegodario88/onix/releases/download/v1.0.0/onix-linux-amd64
-      sha256: abc123
-    
-    - os: windows
+  - os: linux
+    arch: amd64
+    url: https://github.com/alonsovm44/onix/releases/download/v1.0.0/onix-linux-amd64
+    sha256: <filled by CI>
+
+  - os: linux
+    arch: arm64
+    url: https://github.com/alonsovm44/onix/releases/download/v1.0.0/onix-linux-arm64
+    sha256: <filled by CI>
+
+  - os: macos
+    arch: arm64
+    url: https://github.com/alonsovm44/onix/releases/download/v1.0.0/onix-macos-arm64
+    sha256: <filled by CI>
+
+  - os: windows
+    arch: amd64
+    url: https://github.com/alonsovm44/onix/releases/download/v1.0.0/onix-windows-amd64.exe
+    sha256: <filled by CI>
+
+installation:
+  file-type: binary
+  target-dir: ~/.local/bin
+  bin-name: onix
+
+permissions:
+  - type: filesystem
+    action: write
+    path: ~/.local/bin
+  - type: environment
+    action: modify
+    variable: PATH
+
+message: Run `onix --help` to get started

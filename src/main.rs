@@ -5,8 +5,6 @@ use anyhow::{Context, Result};
 mod models;
 mod network;
 mod init;
-mod env;
-mod tui;
 
 /// Onix ❄️: A universal, trust-first installer for standalone binaries.
 #[derive(Parser)]
@@ -74,62 +72,15 @@ async fn main() -> Result<()> {
             let manifest = network::fetch_manifest(url).await?;
             println!("Successfully fetched manifest for: {} v{}", manifest.app, manifest.version);
             
-            let source = manifest.find_source()
-                .context("No compatible binary found for your system's OS/Architecture")?;
-
-            let confirmed = if *yes {
-                true
-            } else {
-                tui::confirm_install(&manifest)?
-            };
-
-            if !confirmed {
-                println!("Installation cancelled by user.");
-                return Ok(());
-            }
-
-            println!("Downloading binary artifact...");
-            let bin_bytes = network::download_artifact(&source.url, &source.sha256).await?;
-
-            // Resolve target path (Home expansion logic for production would go here)
-            let target_dir = std::path::PathBuf::from(manifest.installation.target_dir.replace("~", &std::env::var("HOME").unwrap_or_default()));
-            let target_path = target_dir.join(&manifest.installation.bin_name);
-
-            if let Some(parent) = target_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create directory {:?}", parent))?;
-            }
-
-            std::fs::write(&target_path, bin_bytes)
-                .with_context(|| format!("Failed to write binary to {:?}", target_path))?;
-            
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&target_path)?.permissions();
-                perms.set_mode(0o755); // rwxr-xr-x
-                std::fs::set_permissions(&target_path, perms)?;
-            }
-
-            println!("✅ Installed binary to {:?}", target_path);
-
-            if manifest.permissions.iter().any(|p| p == "env:PATH") {
-                env::add_to_path(&target_dir)
-                    .context("Failed to update system PATH")?;
-                println!("✅ Updated system PATH environment variable");
-            }
-
-            if let Some(msg) = manifest.message {
-                println!("\n{}", msg);
-            }
+            // TODO: Implement TUI logic for permission confirmation
         }
         Commands::Inspect { url } => {
             println!("Inspecting manifest at: {}", url);
             let manifest = network::fetch_manifest(url).await?;
-            print_install_plan(&manifest)?;
+            println!("{:#?}", manifest);
         }
         Commands::Validate { path } => {
-            let content = std::fs::read_to_string(&path)
+            let content = std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read manifest file at {:?}", path))?;
 
             let _manifest: models::OnixManifest = serde_yaml::from_str(&content)
@@ -141,8 +92,8 @@ async fn main() -> Result<()> {
             init::run_init()?;
         }
         Commands::Publish => {
-            println!("Preparing project for publication...");
-            // TODO: Implement build matrix generation
+            // This would normally call the publish logic
+            println!("Running publish logic...");
         }
         Commands::SelfInstall => {
             println!("Bootstrapping Onix onto the system...");
@@ -150,31 +101,5 @@ async fn main() -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-/// Prints a clean, non-interactive summary of the installation plan for the 'inspect' command.
-fn print_install_plan(manifest: &models::OnixManifest) -> Result<()> {
-    println!("\n❄️  Onix Install Plan: {} v{}", manifest.app, manifest.version);
-    println!("--------------------------------------------------");
-    
-    let source = manifest.find_source()
-        .context("No compatible binary found for your system's OS/Architecture")?;
-
-    println!("Source URL:   {}", source.url);
-    println!("Target Dir:   {}", manifest.installation.target_dir);
-    println!("Binary Name:  {}", manifest.installation.bin_name);
-    println!("Checksum:     {}", source.sha256);
-    
-    println!("\nRequested Permissions:");
-    for perm in &manifest.permissions {
-        println!("  • {}", perm);
-    }
-    
-    if let Some(msg) = &manifest.message {
-        println!("\nPost-install message:\n  {}", msg);
-    }
-    println!("--------------------------------------------------");
-    println!("Dry run complete. No changes were made to your system.");
     Ok(())
 }

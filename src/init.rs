@@ -10,6 +10,8 @@ pub struct ProjectConfig {
     pub build: BuildDetails,
     pub install: InstallDetails,
     pub permissions: Vec<Permission>,
+    pub github_user: String,
+    pub repo_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +55,8 @@ pub fn run_init() -> Result<()> {
     let app_name = prompt("CLI name", default_name)?;
     let version = prompt("Version", "1.0.0")?;
     let entry = prompt("Entry file", "main.rs")?;
+    let github_user = prompt("GitHub username", "USER")?;
+    let repo_name = prompt("Repository name", &app_name)?;
 
     let config = ProjectConfig {
         app: AppDetails {
@@ -85,6 +89,8 @@ pub fn run_init() -> Result<()> {
                 variable: Some("PATH".to_string()),
             },
         ],
+        github_user,
+        repo_name,
     };
 
     let onix_dir = Path::new(".onix");
@@ -202,6 +208,8 @@ jobs:
 fn generate_install_manifest(config: &ProjectConfig) -> Result<()> {
     let app_name = &config.app.name;
     let version = &config.app.version;
+    let github_user = &config.github_user;
+    let repo_name = &config.repo_name;
 
     // Construct the manifest based on the v1.0.0 schema
     let content = format!(
@@ -213,22 +221,22 @@ version: {version}
 install-on:
   - os: linux
     arch: amd64
-    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-linux-amd64
+    url: https://github.com/{github_user}/{repo_name}/releases/download/v{version}/{app_name}-linux-amd64
     sha256: <filled by CI>
 
   - os: linux
     arch: arm64
-    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-linux-arm64
+    url: https://github.com/{github_user}/{repo_name}/releases/download/v{version}/{app_name}-linux-arm64
     sha256: <filled by CI>
 
   - os: macos
     arch: arm64
-    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-macos-arm64
+    url: https://github.com/{github_user}/{repo_name}/releases/download/v{version}/{app_name}-macos-arm64
     sha256: <filled by CI>
 
   - os: windows
     arch: amd64
-    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-windows-amd64.exe
+    url: https://github.com/{github_user}/{repo_name}/releases/download/v{version}/{app_name}-windows-amd64.exe
     sha256: <filled by CI>
 
 installation:
@@ -246,6 +254,8 @@ permissions:
 
 message: Run `{app_name} --help` to get started
 "#,
+        github_user = github_user,
+        repo_name = repo_name,
         app_name = app_name,
         version = version,
         target_dir = config.install.target_dir,

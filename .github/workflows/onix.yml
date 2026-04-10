@@ -1,0 +1,73 @@
+name: Onix Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-amd64
+            build_cmd: cargo build --release
+            out: onix
+
+          - os: ubuntu-latest
+            name: linux-arm64
+            build_cmd: cargo build --release
+            out: onix
+
+          - os: macos-latest
+            name: macos-arm64
+            build_cmd: cargo build --release
+            out: onix
+
+          - os: windows-latest
+            name: windows-amd64
+            build_cmd: cargo build --release
+            out: onix
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Build binary
+        run: ${{ matrix.build_cmd }}
+
+      - name: Rename artifact
+        run: |
+          mkdir -p dist
+          mv ${{ matrix.out }} dist/${{ matrix.name }} || mv ${{ matrix.out }}.exe dist/${{ matrix.name }}
+
+      - name: Generate SHA256
+        run: |
+          cd dist
+          sha256sum * > checksums.txt || certutil -hashfile * SHA256 > checksums.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
