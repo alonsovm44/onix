@@ -3,10 +3,10 @@
 ## Phase 1: Foundation & The Validation Engine (The "Logic")
 Focus on the plumbing required to handle the .onix manifest safely.
 
-[ ] CLI Scaffolding: Implement clap for subcommands (install, inspect, validate).
-[ ] Manifest Parser: Robust YAML parsing using serde_yaml based on our models.rs.
-[ ] Hashing Utility: Implementation of SHA256 verification logic to ensure artifact integrity.
-[ ] onix validate: Enable developers to check their YAML schema locally against the spec.
+[x ] CLI Scaffolding: Implement clap for subcommands (install, inspect, validate).
+[x ] Manifest Parser: Robust YAML parsing using serde_yaml based on our models.rs.
+[ x] Hashing Utility: Implementation of SHA256 verification logic to ensure artifact integrity.
+[x ] onix validate: Enable developers to check their YAML schema locally against the spec.
 
 ## Phase 2: The Trust Primitive (The "Interface")
 Build the TUI that differentiates Onix from curl | sh.

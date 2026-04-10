@@ -99,7 +99,9 @@ pub fn run_init() -> Result<()> {
 
     if prompt("Generate workflow + install.onix?", "Y")?.to_uppercase() == "Y" {
         generate_github_workflow(&config)?;
+        generate_install_manifest(&config)?;
         println!("✅ Generated .github/workflows/onix.yml");
+        println!("✅ Generated install.onix template");
     }
 
     Ok(())
@@ -194,6 +196,63 @@ jobs:
     );
 
     fs::write(workflow_dir.join("onix.yml"), content).context("Failed to write onix.yml workflow")?;
+    Ok(())
+}
+
+fn generate_install_manifest(config: &ProjectConfig) -> Result<()> {
+    let app_name = &config.app.name;
+    let version = &config.app.version;
+
+    // Construct the manifest based on the v1.0.0 schema
+    let content = format!(
+        r#"schema: 1.0.0
+
+app: {app_name}
+version: {version}
+
+install-on:
+  - os: linux
+    arch: amd64
+    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-linux-amd64
+    sha256: <filled by CI>
+
+  - os: linux
+    arch: arm64
+    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-linux-arm64
+    sha256: <filled by CI>
+
+  - os: macos
+    arch: arm64
+    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-macos-arm64
+    sha256: <filled by CI>
+
+  - os: windows
+    arch: amd64
+    url: https://github.com/USER/REPO/releases/download/v{version}/{app_name}-windows-amd64.exe
+    sha256: <filled by CI>
+
+installation:
+  file-type: binary
+  target-dir: {target_dir}
+  bin-name: {bin_name}
+
+permissions:
+  - type: filesystem
+    action: write
+    path: {target_dir}
+  - type: environment
+    action: modify
+    variable: PATH
+
+message: Run `{app_name} --help` to get started
+"#,
+        app_name = app_name,
+        version = version,
+        target_dir = config.install.target_dir,
+        bin_name = config.install.bin_name
+    );
+
+    fs::write("install.onix", content).context("Failed to write install.onix template")?;
     Ok(())
 }
 
