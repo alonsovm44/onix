@@ -1,7 +1,7 @@
 use crate::models::OnixManifest;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+//use std::io::Write;
 
 /// Fetches an Onix manifest from a remote URL and parses it.
 pub async fn fetch_manifest(url: &str) -> Result<OnixManifest> {
