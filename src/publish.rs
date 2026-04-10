@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub fn run_publish(bump: Option<&str>) -> Result<()> {
+pub fn run_publish(bump: Option<&str>, version: Option<&str>) -> Result<()> {
     let config_path = ".onix/config.yaml";
     
     if !std::path::Path::new(config_path).exists() {
@@ -20,36 +20,21 @@ pub fn run_publish(bump: Option<&str>) -> Result<()> {
     let mut config: ProjectConfig = serde_yaml::from_str(&content)
         .context("Failed to parse project configuration")?;
 
-    // Handle version bumping if requested
-    if let Some(level) = bump {
+    let target_version = if let Some(v) = version {
+        Some(v.to_string())
+    } else if let Some(level) = bump {
+        Some(bump_version(&config.app.version, level)?)
+    } else {
+        None
+    };
+
+    if let Some(new_version) = target_version {
         let old_version = config.app.version.clone();
-        let new_version = bump_version(&old_version, level)?;
-        
-        println!("🔄 Bumping version: {} -> {}", old_version, new_version);
-        
-        // Update config.yaml
-        config.app.version = new_version.clone();
-        let updated_config = serde_yaml::to_string(&config)?;
-        fs::write(config_path, updated_config)?;
+        update_files_version(config_path, &mut config, &new_version, &old_version)?;
 
-        // Update install.onix
-        let manifest_path = "install.onix";
-        if std::path::Path::new(manifest_path).exists() {
-            let m_content = fs::read_to_string(manifest_path)?;
-            let mut manifest: OnixManifest = serde_yaml::from_str(&m_content)?;
-            
-            manifest.version = new_version.clone();
-            
-            // Update URLs in manifest to point to the new version tag
-            for source in &mut manifest.install_on {
-                source.url = source.url.replace(
-                    &format!("v{}", old_version),
-                    &format!("v{}", new_version)
-                );
-            }
-
-            let updated_manifest = serde_yaml::to_string(&manifest)?;
-            fs::write(manifest_path, updated_manifest)?;
+        if version.is_some() {
+            execute_git_commands(&new_version)?;
+            return Ok(());
         }
     }
 
@@ -101,6 +86,51 @@ fn bump_version(version: &str, level: &str) -> Result<String> {
     }
 
     Ok(format!("{}.{}.{}", parts[0], parts[1], parts[2]))
+}
+
+fn update_files_version(config_path: &str, config: &mut ProjectConfig, new_version: &str, old_version: &str) -> Result<()> {
+    println!("🔄 Updating version: {} -> {}", old_version, new_version);
+    
+    config.app.version = new_version.to_string();
+    let updated_config = serde_yaml::to_string(config)?;
+    fs::write(config_path, updated_config)?;
+
+    let manifest_path = "install.onix";
+    if std::path::Path::new(manifest_path).exists() {
+        let content = fs::read_to_string(manifest_path)?;
+        let mut manifest: OnixManifest = serde_yaml::from_str(&content)?;
+        manifest.version = new_version.to_string();
+        
+        for source in &mut manifest.install_on {
+            source.url = source.url.replace(&format!("v{}", old_version), &format!("v{}", new_version));
+        }
+        fs::write(manifest_path, serde_yaml::to_string(&manifest)?)?;
+    }
+    Ok(())
+}
+
+fn execute_git_commands(version: &str) -> Result<()> {
+    println!("📦 Automating Git release for v{}...", version);
+    let tag = format!("v{}", version);
+    let commit_msg = format!("Release {}", tag);
+
+    let cmds = [
+        (vec!["add", "."], "Staging changes"),
+        (vec!["commit", "-m", &commit_msg], "Committing"),
+        (vec!["push"], "Pushing to master"),
+        (vec!["tag", &tag], "Creating tag"),
+        (vec!["push", "origin", &tag], "Pushing tag"),
+    ];
+
+    for (args, desc) in cmds {
+        println!("  > {}...", desc);
+        let status = Command::new("git").args(args).status()?;
+        if !status.success() {
+            anyhow::bail!("Git command failed during: {}", desc);
+        }
+    }
+    println!("✅ Git release completed.");
+    Ok(())
 }
 
 fn get_runner_for_target(target: &BuildTarget) -> &str {

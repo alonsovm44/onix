@@ -60,6 +60,10 @@ enum Commands {
         /// Increment version (patch, minor, or major)
         #[arg(long, value_parser = ["patch", "minor", "major"])]
         bump: Option<String>,
+
+        /// Explicitly set the version and automate git release (e.g. 1.1.0)
+        #[arg(long = "v")]
+        version: Option<String>,
     },
 
     /// Installs the Onix binary to the system path
@@ -155,11 +159,11 @@ async fn main() -> Result<()> {
         Commands::Init => {
             init::run_init()?;
         }
-        Commands::Publish { update_hashes, bump } => {
+        Commands::Publish { update_hashes, bump, version } => {
             if let Some(path) = update_hashes {
                 publish::update_manifest_hashes(path)?;
             } else {
-                publish::run_publish(bump.as_deref())?;
+                publish::run_publish(bump.as_deref(), version.as_deref())?;
             }
         }
         Commands::SelfInstall => {

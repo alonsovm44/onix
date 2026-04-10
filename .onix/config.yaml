@@ -4,9 +4,20 @@ app:
 build:
   entry: src/main.rs
   command: cargo build --release
+  output_name: onix
+targets:
+- os: linux
+  arch: amd64
+- os: linux
+  arch: arm64
+- os: macos
+  arch: arm64
+- os: windows
+  arch: amd64
 install:
-  bin_name: onix
-  target_dir: ~/.local/bin
+  file-type: binary
+  target-dir: ~/.local/bin
+  bin-name: onix
 permissions:
 - type: filesystem
   action: write
@@ -16,5 +27,3 @@ permissions:
   action: modify
   path: null
   variable: PATH
-github_user: alonsovm44
-repo_name: onix
