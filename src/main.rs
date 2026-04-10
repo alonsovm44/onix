@@ -5,7 +5,10 @@ use anyhow::{Context, Result};
 mod models;
 mod network;
 mod init;
+mod env;
+mod tui;
 
+///
 /// Onix ❄️: A universal, trust-first installer for standalone binaries.
 #[derive(Parser)]
 #[command(name = "onix")]
