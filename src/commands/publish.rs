@@ -48,8 +48,8 @@ pub async fn execute() -> Result<()> {
     run_git(&["push"])?;
 
     println!("🏷️ Creating and pushing tag {}...", tag_name);
-    run_git(&["tag", &tag_name])?;
-    run_git(&["push", "origin", &tag_name])?;
+    run_git(&["tag", "-f", &tag_name])?;
+    run_git(&["push", "origin", &tag_name, "-f"])?;
 
     // 5. Extract GitHub Info
     let (owner, repo_name) = get_repo_remote_info(&repo)?;
@@ -80,7 +80,7 @@ pub async fn execute() -> Result<()> {
         &config, &owner, &repo_name, &tag_name, &checksums
     ).map_err(|e| anyhow!(e.to_string()))?;
 
- println!("📤 Uploading install.onix to GitHub Release...");
+println!("📤 Uploading install.onix to GitHub Release...");
     octo.repos(&owner, &repo_name)
         .releases()
         .upload_asset(release.id.0, "install.onix", manifest_content.into())
