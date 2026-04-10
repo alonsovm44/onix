@@ -114,7 +114,7 @@ permissions:
 message: Run `mycli --help` to get started
 ```
 
-👉 No editing required
+👉 Minimal/No editing required
 
 For `init` output:
 ```cmd
