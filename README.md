@@ -1,4 +1,4 @@
-# Onix ❄️
+# Onix 💎
 
 [![Language](https://img.shields.io/badge/language-rust-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -92,3 +92,5 @@ This project is licensed under the MIT License.
 
 ---
 *Onix: Install with confidence, not just hope.*
+
+can we add "onix publish --v x.x.x " so it automatically stages, commits, pushes, makes the tag with the x.x.x version, and pushes the tag"?  

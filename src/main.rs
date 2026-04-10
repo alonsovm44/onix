@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Commands::Init => commands::init::execute()?,
-        Commands::Publish => println!("Publish is not yet implemented."),
+        Commands::Publish => commands::publish::execute().await?,
         Commands::Install { repo } => println!("Installing {}... (Not yet implemented)", repo),
     }
 

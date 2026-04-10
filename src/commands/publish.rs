@@ -1,0 +1,244 @@
+use std::{fs, env, io};
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+use std::collections::HashMap;
+use anyhow::{Context, Result, anyhow};
+use git2::Repository;
+use regex::Regex;
+use tokio::time::sleep;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    widgets::{Block, Borders, Gauge, Paragraph},
+    Terminal,
+};
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute as cross_execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use crate::manifest_generator::{AppConfig};
+
+pub async fn execute() -> Result<()> {
+    // 1. Load configuration to get the current version
+    let config_path = Path::new(".onix/config.yaml");
+    if !config_path.exists() {
+        return Err(anyhow!("Not an Onix project. Please run 'onix init' first."));
+    }
+
+    let config_content = fs::read_to_string(config_path)
+        .context("Failed to read .onix/config.yaml")?;
+    let config: AppConfig = serde_yaml::from_str(&config_content)
+        .context("Failed to parse .onix/config.yaml")?;
+
+    let tag_name = format!("v{}", config.app.version);
+    println!("🚀 Preparing to publish {} version {}...", config.app.name, tag_name);
+
+    // 2. Open the Git repository
+    let repo = Repository::open(".")
+        .context("Failed to open git repository. 'onix publish' must be run inside a git repo.")?;
+
+    // 3. Automated Git Workflow: Stage, Commit, Push, Tag, and Push Tag
+    println!("📦 Staging and committing changes...");
+    run_git(&["add", "."])?;
+    // Ignore commit error if there's nothing new to commit
+    let _ = run_git(&["commit", "-m", &format!("release: {}", tag_name)]);
+    run_git(&["push"])?;
+
+    println!("🏷️ Creating and pushing tag {}...", tag_name);
+    run_git(&["tag", &tag_name])?;
+    run_git(&["push", "origin", &tag_name])?;
+
+    // 5. Extract GitHub Info
+    let (owner, repo_name) = get_repo_remote_info(&repo)?;
+    println!("📦 Repository identified: {}/{}", owner, repo_name);
+
+    let token = env::var("GITHUB_TOKEN")
+        .context("GITHUB_TOKEN environment variable is required to interact with GitHub.")?;
+    let octo = octocrab::Octocrab::builder()
+        .personal_token(token)
+        .build()
+        .context("Failed to initialize GitHub client")?;
+
+    // 6. Poll GitHub Actions
+    poll_ci_status(&octo, &owner, &repo_name, &tag_name).await?;
+
+    // 7. Fetch release and compute hashes
+    println!("🔍 Fetching release artifacts for verification...");
+    let release = octo.repos(&owner, &repo_name)
+        .releases()
+        .get_by_tag(&tag_name)
+        .await
+        .context("Could not find release for the pushed tag")?;
+
+    let checksums = fetch_and_hash_assets(&config, &release).await?;
+
+    // 8. Generate and upload install.onix
+    println!("📝 Generating automated install manifest...");
+    let manifest_content = crate::manifest_generator::generate_install_manifest(
+        &config, &owner, &repo_name, &tag_name, &checksums
+    ).map_err(|e| anyhow!(e.to_string()))?;
+
+    println!("📤 Uploading install.onix to GitHub Release...");
+    octo.repos(&owner, &repo_name)
+        .releases()
+        .upload_asset(release.id.0, "install.onix", manifest_content.into())
+        .send() 
+        .await
+        .context("Failed to upload manifest to release")?;
+    
+    println!("🚀 Version {} successfully published!", config.app.version);
+    Ok(())
+}
+
+/// Extracts GitHub owner and repo name from the 'origin' remote URL.
+fn get_repo_remote_info(repo: &Repository) -> Result<(String, String)> {
+    let remote = repo.find_remote("origin")
+        .context("Could not find git remote 'origin'.")?;
+    
+    let url = remote.url()
+        .context("Remote 'origin' has no URL defined.")?;
+
+    // Regex covers:
+    // https://github.com/owner/repo.git
+    // git@github.com:owner/repo.git
+    let re = Regex::new(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/\.]+)(\.git)?$")?;
+    
+    let caps = re.captures(url)
+        .ok_or_else(|| anyhow!("Could not parse GitHub owner/repo from URL: {}", url))?;
+
+    Ok((
+        caps["owner"].to_string(),
+        caps["repo"].to_string()
+    ))
+}
+
+/// Polls GitHub Actions until the workflow run for the specific tag completes.
+async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag: &str) -> Result<()> {
+    // Setup TUI
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    cross_execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut attempt = 0;
+    let mut progress = 0;
+    let mut status_msg = String::from("Initializing poll...");
+
+    let result = loop {
+        attempt += 1;
+
+        // Handle user input to allow quitting
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('q') {
+                    break Err(anyhow!("Publishing aborted by user."));
+                }
+            }
+        }
+
+        terminal.draw(|f| {
+            let size = f.size();
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(2)
+                .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+                .split(size);
+
+            let gauge = Gauge::default()
+                .block(Block::default().title("CI Build Progress").borders(Borders::ALL))
+                .gauge_style(Style::default().fg(Color::Cyan))
+                .percent(progress);
+            f.render_widget(gauge, chunks[0]);
+
+            let text = format!("Status: {}\n(Press 'q' to abort)", status_msg);
+            let paragraph = Paragraph::new(text)
+                .block(Block::default().title("Activity").borders(Borders::ALL));
+            f.render_widget(paragraph, chunks[1]);
+        })?;
+        
+        let runs = octo.workflows(owner, repo)
+            .list_all_runs()
+            .send()
+            .await
+            .context("Failed to fetch workflow runs from GitHub")?;
+
+        let target_run = runs.items.iter().find(|r| {
+            r.head_branch == tag || r.head_sha == tag
+        });
+
+        match target_run {
+            Some(run) => {
+                match run.status.as_str() {
+                    "completed" => {
+                        if run.conclusion.as_deref() == Some("success") {
+                            progress = 100;
+                            status_msg = "✅ CI Build Completed Successfully!".into();
+                            sleep(Duration::from_secs(1)).await;
+                            break Ok(());
+                        } else {
+                            break Err(anyhow!("CI failed: {:?}", run.conclusion));
+                        }
+                    }
+                    _ => {
+                        progress = 50;
+                        status_msg = format!("🔨 CI Status: {}", run.status);
+                    }
+                }
+            }
+            None => status_msg = "⏳ Waiting for GitHub to register the tag...".into(),
+        }
+
+        sleep(Duration::from_secs(5)).await;
+    };
+
+    // Teardown TUI
+    disable_raw_mode()?;
+    cross_execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    result
+}
+
+async fn fetch_and_hash_assets(
+    config: &AppConfig,
+    release: &octocrab::models::repos::Release,
+) -> Result<HashMap<(String, String), String>> {
+    let mut checksums = HashMap::new();
+    let client = reqwest::Client::new();
+    let temp_dir = env::temp_dir().join("onix_publish");
+    fs::create_dir_all(&temp_dir)?;
+
+    for target in &config.targets {
+        let asset_name = format!("{}-{}-{}", config.build.output_name, target.os, target.arch);
+        let asset = release.assets.iter()
+            .find(|a| a.name == asset_name || a.name == format!("{}.exe", asset_name))
+            .ok_or_else(|| anyhow!("Asset {} not found in release", asset_name))?;
+
+        let file_path = temp_dir.join(&asset.name);
+        let resp = client.get(asset.browser_download_url.clone()).send().await?;
+        let bytes = resp.bytes().await?;
+        fs::write(&file_path, bytes)?;
+
+        let hash = crate::manifest_generator::calculate_sha256(&file_path)
+            .map_err(|e| anyhow!(e.to_string()))?;
+        
+        checksums.insert((target.os.clone(), target.arch.clone()), hash);
+        fs::remove_file(file_path)?;
+    }
+    Ok(checksums)
+}
+
+/// Helper to run git commands and handle errors.
+fn run_git(args: &[&str]) -> Result<()> {
+    let status = Command::new("git")
+        .args(args)
+        .status()
+        .context(format!("Failed to execute 'git {}'", args.join(" ")))?;
+
+    if !status.success() {
+        return Err(anyhow!("Git command failed: git {}", args.join(" ")));
+    }
+    Ok(())
+}
