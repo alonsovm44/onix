@@ -1,4 +1,4 @@
-use std::{fs, env, io};
+use std::{fs, env, io, fs::OpenOptions, io::Write};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -55,8 +55,7 @@ pub async fn execute() -> Result<()> {
     let (owner, repo_name) = get_repo_remote_info(&repo)?;
     println!("📦 Repository identified: {}/{}", owner, repo_name);
 
-    let token = env::var("GITHUB_TOKEN")
-        .context("GITHUB_TOKEN environment variable is required to interact with GitHub.")?;
+    let token = get_github_token()?;
     let octo = octocrab::Octocrab::builder()
         .personal_token(token)
         .build()
@@ -81,14 +80,14 @@ pub async fn execute() -> Result<()> {
         &config, &owner, &repo_name, &tag_name, &checksums
     ).map_err(|e| anyhow!(e.to_string()))?;
 
-    println!("📤 Uploading install.onix to GitHub Release...");
+ println!("📤 Uploading install.onix to GitHub Release...");
     octo.repos(&owner, &repo_name)
         .releases()
         .upload_asset(release.id.0, "install.onix", manifest_content.into())
         .send() 
         .await
         .context("Failed to upload manifest to release")?;
-    
+        
     println!("🚀 Version {} successfully published!", config.app.version);
     Ok(())
 }
@@ -240,5 +239,90 @@ fn run_git(args: &[&str]) -> Result<()> {
     if !status.success() {
         return Err(anyhow!("Git command failed: git {}", args.join(" ")));
     }
+    Ok(())
+}
+
+/// Retrieves the GitHub token from the environment or prompts the user with masked input.
+fn get_github_token() -> Result<String> {
+    // 1. Check Environment Variable
+    if let Ok(token) = env::var("GITHUB_TOKEN") {
+        return Ok(token);
+    }
+
+    // 2. Check Local File
+    let token_path = Path::new(".onix/token.key");
+    if token_path.exists() {
+        let token = fs::read_to_string(token_path)?.trim().to_string();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    println!("🔑 GITHUB_TOKEN not found in environment.");
+    println!("Please enter a GitHub Personal Access Token (input will be hidden):");
+
+    enable_raw_mode()?;
+    let mut token = String::new();
+    loop {
+        if let Event::Key(key) = event::read()? {
+            match key.code {
+                KeyCode::Enter => break,
+                KeyCode::Char(c) => token.push(c),
+                KeyCode::Backspace => { token.pop(); }
+                KeyCode::Esc => {
+                    disable_raw_mode()?;
+                    return Err(anyhow!("Operation cancelled by user."));
+                }
+                _ => {}
+            }
+        }
+    }
+    disable_raw_mode()?;
+    println!();
+
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err(anyhow!("GitHub token cannot be empty."));
+    }
+
+    // 3. Save for future use
+    save_token(&token)?;
+    Ok(token)
+}
+
+/// Saves the token to .onix/token.key and ensures it is ignored by git.
+fn save_token(token: &str) -> Result<()> {
+    let dot_onix = Path::new(".onix");
+    if !dot_onix.exists() {
+        fs::create_dir_all(dot_onix)?;
+    }
+
+    let token_file = dot_onix.join("token.key");
+    fs::write(&token_file, token)?;
+    
+    // Ensure the token is in .gitignore
+    let gitignore_path = Path::new(".gitignore");
+    let pattern = ".onix/token.key";
+    
+    let mut content = if gitignore_path.exists() {
+        fs::read_to_string(gitignore_path)?
+    } else {
+        String::new()
+    };
+
+    if !content.lines().any(|l| l.trim() == pattern) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(gitignore_path)?;
+        
+        if !content.is_empty() && !content.ends_with('\n') {
+            writeln!(file)?;
+        }
+        writeln!(file, "{}", pattern)?;
+        println!("🛡️  Added {} to .gitignore", pattern);
+    }
+
+    println!("💾 Token saved locally to {}", token_file.display());
     Ok(())
 }
