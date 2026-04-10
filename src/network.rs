@@ -3,6 +3,36 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 //use std::io::Write;
 
+/// Resolves a shorthand identifier (e.g., user@repo) or a direct URL
+/// into a full manifest URL.
+pub async fn resolve_url(input: &str) -> String {
+    if input.starts_with("http://") || input.starts_with("https://") {
+        return input.to_string();
+    }
+
+    if let Some((user, repo)) = input.split_once('@') {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .user_agent("onix-cli/1.0.0")
+            .build()
+            .unwrap_or_default();
+
+        let main_url = format!("https://raw.githubusercontent.com/{}/{}/main/install.onix", user, repo);
+        
+        // Check if the 'main' branch contains the manifest
+        if let Ok(resp) = client.head(&main_url).send().await {
+            if resp.status().is_success() {
+                return main_url;
+            }
+        }
+
+        // Default/Fallback to the 'master' branch
+        return format!("https://raw.githubusercontent.com/{}/{}/master/install.onix", user, repo);
+    }
+
+    input.to_string()
+}
+
 /// Fetches an Onix manifest from a remote URL and parses it.
 pub async fn fetch_manifest(url: &str) -> Result<OnixManifest> {
     let client = reqwest::Client::builder()

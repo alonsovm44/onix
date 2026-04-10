@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 //use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OnixManifest {
     pub schema: String,
     pub app: String,
@@ -29,7 +29,7 @@ impl OnixManifest {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlatformSource {
     pub os: String,
     pub arch: String,
@@ -37,7 +37,7 @@ pub struct PlatformSource {
     pub sha256: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Permission {
     #[serde(rename = "type")]
     pub permission_type: String,
@@ -46,7 +46,7 @@ pub struct Permission {
     pub variable: Option<String>, // For environment permissions
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Installation {
     #[serde(rename = "file-type")]
     pub file_type: String, // e.g., "binary"
@@ -54,4 +54,34 @@ pub struct Installation {
     pub target_dir: String,
     #[serde(rename = "bin-name")]
     pub bin_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectConfig {
+    pub app: AppConfig,
+    pub build: BuildConfig,
+    pub targets: Vec<BuildTarget>,
+    pub install: Installation,
+    pub permissions: Vec<Permission>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppConfig {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BuildConfig {
+    pub entry: String,
+    pub command: String,
+    pub output_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BuildTarget {
+    pub os: String,
+    pub arch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
 }

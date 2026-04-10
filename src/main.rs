@@ -7,6 +7,7 @@ mod network;
 mod init;
 mod env;
 mod tui;
+mod publish;
 
 ///
 /// Onix ❄️: A universal, trust-first installer for standalone binaries.
@@ -51,7 +52,15 @@ enum Commands {
     Init,
 
     /// Generates the compilation matrix and publish-ready hashes
-    Publish,
+    Publish {
+        /// Update install.onix with hashes from a checksum file (e.g. dist/checksums.txt)
+        #[arg(long)]
+        update_hashes: Option<PathBuf>,
+
+        /// Increment version (patch, minor, or major)
+        #[arg(long, value_parser = ["patch", "minor", "major"])]
+        bump: Option<String>,
+    },
 
     /// Installs the Onix binary to the system path
     SelfInstall,
@@ -67,20 +76,29 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Commands::Install { url, yes } => {
-            println!("Installing from: {}", url);
-            if *yes {
-                println!("Confirmation skipped (--yes)");
+            let resolved_url = network::resolve_url(url).await;
+            let manifest = network::fetch_manifest(&resolved_url).await?;
+            
+            let confirmed = if *yes {
+                true
+            } else {
+                tui::display_manifest_tui(manifest.clone(), true)
+                    .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?
+            };
+
+            if !confirmed {
+                println!("❌ Installation aborted by user.");
+                return Ok(());
             }
-            
-            let manifest = network::fetch_manifest(url).await?;
-            println!("Successfully fetched manifest for: {} v{}", manifest.app, manifest.version);
-            
-            // TODO: Implement TUI logic for permission confirmation
+
+            println!("🚀 Installing: {} v{}", manifest.app, manifest.version);
+            // TODO: Call Phase 3 logic (download_artifact and write to disk)
         }
         Commands::Inspect { url } => {
-            println!("Inspecting manifest at: {}", url);
-            let manifest = network::fetch_manifest(url).await?;
-            println!("{:#?}", manifest);
+            let resolved_url = network::resolve_url(url).await;
+            let manifest = network::fetch_manifest(&resolved_url).await?;
+            tui::display_manifest_tui(manifest, false)
+                .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?;
         }
         Commands::Validate { path } => {
             let content = std::fs::read_to_string(path)
@@ -94,9 +112,12 @@ async fn main() -> Result<()> {
         Commands::Init => {
             init::run_init()?;
         }
-        Commands::Publish => {
-            // This would normally call the publish logic
-            println!("Running publish logic...");
+        Commands::Publish { update_hashes, bump } => {
+            if let Some(path) = update_hashes {
+                publish::update_manifest_hashes(path)?;
+            } else {
+                publish::run_publish(bump.as_deref())?;
+            }
         }
         Commands::SelfInstall => {
             println!("Bootstrapping Onix onto the system...");

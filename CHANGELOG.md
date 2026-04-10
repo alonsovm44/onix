@@ -2,6 +2,8 @@
 
 Added:
 
+- added support for main and master naming conventions
+- added tui for inspect
 - added ratatui tui 
 - added platform detection, added find_source utility
 - added multi OS PATH management

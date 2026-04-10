@@ -14,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
-pub fn display_manifest_tui(manifest: OnixManifest) -> Result<(), Box<dyn std::error::Error>> {
+pub fn display_manifest_tui(manifest: OnixManifest, interactive: bool) -> Result<bool, Box<dyn std::error::Error>> {
     // Terminal initialization
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -22,7 +22,7 @@ pub fn display_manifest_tui(manifest: OnixManifest) -> Result<(), Box<dyn std::e
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_app(&mut terminal, manifest);
+    let res = run_app(&mut terminal, manifest, interactive);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -32,29 +32,38 @@ pub fn display_manifest_tui(manifest: OnixManifest) -> Result<(), Box<dyn std::e
     )?;
     terminal.show_cursor()?;
 
-    if let Err(err) = res {
-        println!("{:?}", err)
-    }
-
-    Ok(())
+    Ok(res?)
 }
 
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     manifest: OnixManifest,
-) -> io::Result<()> {
+    interactive: bool,
+) -> io::Result<bool> {
     loop {
-        terminal.draw(|f| ui(f, &manifest))?;
+        terminal.draw(|f| ui(f, &manifest, interactive))?;
 
         if let Event::Key(key) = event::read()? {
-            if let KeyCode::Char('q') | KeyCode::Esc = key.code {
-                return Ok(());
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
+                KeyCode::Char('y') if interactive => return Ok(true),
+                KeyCode::Char('n') if interactive => return Ok(false),
+                _ => {}
             }
         }
     }
 }
 
-fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest) {
+fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest, interactive: bool) {
+    let size = f.size();
+    
+    // Ensure terminal is large enough
+    if size.width < 60 || size.height < 20 {
+        let warning = Paragraph::new("Terminal too small to display manifest").alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(warning, size);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -121,14 +130,24 @@ fn ui(f: &mut ratatui::Frame, manifest: &OnixManifest) {
 
     // 3. Footer
     let message_text = manifest.message.clone().unwrap_or_else(|| "Press 'q' to exit".to_string());
-    let footer = Paragraph::new(Line::from(vec![
+    
+    let mut footer_spans = vec![
         Span::styled("Message: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(message_text),
         Span::raw(" | "),
-        Span::styled("Press 'q' or 'Esc' to exit", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
-    ]))
-    .alignment(ratatui::layout::Alignment::Center)
-    .block(Block::default().borders(Borders::TOP));
+    ];
+
+    if interactive {
+        footer_spans.push(Span::styled("[Y] Accept & Install", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+        footer_spans.push(Span::raw("   "));
+        footer_spans.push(Span::styled("[N] Reject", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+    } else {
+        footer_spans.push(Span::styled("Press 'q' or 'Esc' to exit", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)));
+    }
+
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().borders(Borders::TOP));
     
     f.render_widget(footer, chunks[2]);
 }

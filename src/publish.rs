@@ -1,102 +1,180 @@
+use crate::models::{ProjectConfig, OnixManifest, BuildTarget};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
-use sha2::{Digest, Sha256};
-use crate::init::ProjectConfig;
-use crate::models::OnixManifest;
 
-/// Executes the project build command, hashes the result, and updates install.onix.
-pub fn run_publish() -> Result<()> {
-    let config_path = Path::new(".onix/config.yaml");
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!(".onix/config.yaml not found. Run 'onix init' first."));
+pub fn run_publish(bump: Option<&str>) -> Result<()> {
+    let config_path = ".onix/config.yaml";
+    
+    if !std::path::Path::new(config_path).exists() {
+        return Err(anyhow::anyhow!(
+            "Project configuration not found at {}. Run `onix init` first.",
+            config_path
+        ));
     }
 
-    let config_str = fs::read_to_string(config_path)
+    let content = fs::read_to_string(config_path)
         .context("Failed to read .onix/config.yaml")?;
-    let config: ProjectConfig = serde_yaml::from_str(&config_str)
-        .context("Failed to parse .onix/config.yaml")?;
-
-    println!("🚀 Running build command: {}", config.build.command);
     
-    let (shell, arg) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
-    
-    let status = Command::new(shell)
-        .arg(arg)
-        .arg(&config.build.command)
-        .status()
-        .context("Failed to execute build command")?;
+    let mut config: ProjectConfig = serde_yaml::from_str(&content)
+        .context("Failed to parse project configuration")?;
 
-    if !status.success() {
-        return Err(anyhow::anyhow!("Build command failed with status: {}", status));
-    }
+    // Handle version bumping if requested
+    if let Some(level) = bump {
+        let old_version = config.app.version.clone();
+        let new_version = bump_version(&old_version, level)?;
+        
+        println!("🔄 Bumping version: {} -> {}", old_version, new_version);
+        
+        // Update config.yaml
+        config.app.version = new_version.clone();
+        let updated_config = serde_yaml::to_string(&config)?;
+        fs::write(config_path, updated_config)?;
 
-    let bin_path = find_binary(&config)?;
-    println!("📦 Found binary: {:?}", bin_path);
+        // Update install.onix
+        let manifest_path = "install.onix";
+        if std::path::Path::new(manifest_path).exists() {
+            let m_content = fs::read_to_string(manifest_path)?;
+            let mut manifest: OnixManifest = serde_yaml::from_str(&m_content)?;
+            
+            manifest.version = new_version.clone();
+            
+            // Update URLs in manifest to point to the new version tag
+            for source in &mut manifest.install_on {
+                source.url = source.url.replace(
+                    &format!("v{}", old_version),
+                    &format!("v{}", new_version)
+                );
+            }
 
-    let bytes = fs::read(&bin_path)
-        .with_context(|| format!("Failed to read binary at {:?}", bin_path))?;
-    
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hash = hex::encode(hasher.finalize());
-    println!("🛡️  Generated SHA256: {}", hash);
-
-    let manifest_path = Path::new("install.onix");
-    if !manifest_path.exists() {
-        return Err(anyhow::anyhow!("install.onix not found. Run 'onix init' first."));
-    }
-
-    let manifest_str = fs::read_to_string(manifest_path)
-        .context("Failed to read install.onix")?;
-    let mut manifest: OnixManifest = serde_yaml::from_str(&manifest_str)
-        .context("Failed to parse install.onix")?;
-
-    let current_os = std::env::consts::OS;
-    let current_arch = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        arch => arch,
-    };
-
-    let mut found = false;
-    for source in &mut manifest.install_on {
-        if source.os == current_os && source.arch == current_arch {
-            source.sha256 = hash.clone();
-            found = true;
-            break;
+            let updated_manifest = serde_yaml::to_string(&manifest)?;
+            fs::write(manifest_path, updated_manifest)?;
         }
     }
 
-    if found {
-        let updated_manifest = serde_yaml::to_string(&manifest)
-            .context("Failed to serialize updated manifest")?;
-        fs::write(manifest_path, updated_manifest)
-            .context("Failed to write updated install.onix")?;
-        println!("✅ Updated install.onix for {}/{}", current_os, current_arch);
-    } else {
-        println!("⚠️  Current platform ({}/{}) not found in install.onix. No hash was updated.", current_os, current_arch);
+    // Pre-flight check: Ensure we are in a git repo and have a remote
+    let remote_url = get_git_remote().unwrap_or_else(|_| "unknown".to_string());
+    let repo_slug = extract_github_slug(&remote_url);
+
+    println!("🚀 Preparing publication for {} v{}", config.app.name, config.app.version);
+    println!("\n📊 Generated Compilation Matrix:");
+    
+    println!("{:<15} | {:<10} | {:<20}", "OS", "Arch", "Runner (GHA)");
+    println!("{:-<15}-|-{:-<10}-|-{:-<20}", "", "", "");
+
+    for target in &config.targets {
+        let runner = get_runner_for_target(target);
+        println!("{:<15} | {:<10} | {:<20}", target.os, target.arch, runner);
+    }
+
+    println!("\n✅ Matrix validated.");
+    println!("🔗 GitHub Action: .github/workflows/onix.yml is synced.");
+    println!("\nNext steps:");
+    println!("1. Commit your changes: `git add . && git commit -m 'Release {}'`", config.app.version);
+    println!("2. Tag the release: `git tag v{}`", config.app.version);
+    println!("3. Push to trigger CI: `git push origin v{}`", config.app.version);
+    
+    if let Some(slug) = repo_slug {
+        println!("\n🌍 Your public installation URL will be:");
+        println!("   https://raw.githubusercontent.com/{}/master/install.onix", slug);
     }
 
     Ok(())
 }
 
-fn find_binary(config: &ProjectConfig) -> Result<PathBuf> {
-    let bin_name = &config.install.bin_name;
-    
-    let paths = [
-        PathBuf::from(bin_name),
-        PathBuf::from(format!("{}.exe", bin_name)),
-        PathBuf::from("target/release").join(bin_name),
-        PathBuf::from("target/release").join(format!("{}.exe", bin_name)),
-    ];
+fn bump_version(version: &str, level: &str) -> Result<String> {
+    let mut parts: Vec<u32> = version
+        .split('.')
+        .map(|s| s.parse().context("Invalid version segment in config.yaml"))
+        .collect::<Result<Vec<_>>>()?;
 
-    for path in paths {
-        if path.exists() {
-            return Ok(path);
+    if parts.len() != 3 {
+        anyhow::bail!("Version must follow semantic versioning (x.y.z)");
+    }
+
+    match level {
+        "major" => { parts[0] += 1; parts[1] = 0; parts[2] = 0; }
+        "minor" => { parts[1] += 1; parts[2] = 0; }
+        "patch" => { parts[2] += 1; }
+        _ => anyhow::bail!("Invalid bump level"),
+    }
+
+    Ok(format!("{}.{}.{}", parts[0], parts[1], parts[2]))
+}
+
+fn get_runner_for_target(target: &BuildTarget) -> &str {
+    target.runner.as_deref().unwrap_or_else(|| {
+        match target.os.as_str() {
+            "linux" => "ubuntu-latest",
+            "macos" => "macos-latest",
+            "windows" => "windows-latest",
+            _ => "ubuntu-latest",
+        }
+    })
+}
+
+fn get_git_remote() -> Result<String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .context("Failed to execute git command")?;
+    
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn extract_github_slug(url: &str) -> Option<String> {
+    // Simple extractor for git@github.com:user/repo.git or https://github.com/user/repo
+    if url.contains("github.com") {
+        let parts: Vec<&str> = if url.contains("https://") {
+            url.trim_end_matches(".git").split('/').collect()
+        } else {
+            url.trim_end_matches(".git").split(':').collect()
+        };
+        
+        parts.last().map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn update_manifest_hashes(checksum_path: &PathBuf) -> Result<()> {
+    let manifest_path = "install.onix";
+    
+    // 1. Parse the checksum file (Format: <hash>  <filename>)
+    let checksum_content = fs::read_to_string(checksum_path)
+        .with_context(|| format!("Failed to read checksum file at {:?}", checksum_path))?;
+    
+    let mut hashes = std::collections::HashMap::new();
+    for line in checksum_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            // parts[0] is the hash, parts[1] is the filename
+            hashes.insert(parts[1].to_string(), parts[0].to_string());
         }
     }
 
-    Err(anyhow::anyhow!("Could not locate binary: {}. Ensure your build command produces this file.", bin_name))
+    // 2. Load the current manifest
+    let manifest_content = fs::read_to_string(manifest_path)
+        .context("Failed to read install.onix")?;
+    let mut manifest: OnixManifest = serde_yaml::from_str(&manifest_content)
+        .context("Failed to parse manifest for update")?;
+
+    // 3. Match and update hashes based on filename extracted from URL
+    let mut updated_count = 0;
+    for source in &mut manifest.install_on {
+        if let Some(filename) = source.url.split('/').last() {
+            if let Some(hash) = hashes.get(filename) {
+                source.sha256 = hash.clone();
+                updated_count += 1;
+            }
+        }
+    }
+
+    // 4. Serialize back to YAML and save
+    let updated_yaml = serde_yaml::to_string(&manifest)?;
+    fs::write(manifest_path, updated_yaml)?;
+
+    println!("✅ Successfully updated {} platform hashes in {}", updated_count, manifest_path);
+    Ok(())
 }
