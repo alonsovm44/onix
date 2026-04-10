@@ -1,6 +1,6 @@
 app:
   name: onix
-  version: 1.0.1
+  version: 0.1.0
 build:
   entry: src/main.rs
   command: cargo build --release
@@ -15,9 +15,9 @@ targets:
 - os: windows
   arch: amd64
 install:
-  file-type: binary
-  target-dir: ~/.local/bin
-  bin-name: onix
+  file_type: binary
+  target_dir: ~/.local/bin
+  bin_name: onix
 permissions:
 - type: filesystem
   action: write
