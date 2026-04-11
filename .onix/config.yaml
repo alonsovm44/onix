@@ -7,13 +7,13 @@ build:
   output_name: onix
 targets:
 - os: linux
-  arch: amd64
-- os: linux
-  arch: arm64
+  arch: x86_64
+- os: macos
+  arch: x86_64
 - os: macos
   arch: arm64
 - os: windows
-  arch: amd64
+  arch: x86_64
 install:
   file_type: binary
   target_dir: ~/.local/bin

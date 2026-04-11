@@ -21,7 +21,7 @@ use crossterm::{
 };
 use crate::manifest_generator::{AppConfig};
 
-pub async fn execute() -> Result<()> {
+pub async fn execute(version_arg: Option<String>) -> Result<()> {
     // 1. Load configuration to get the current version
     let config_path = Path::new(".onix/config.yaml");
     if !config_path.exists() {
@@ -30,8 +30,17 @@ pub async fn execute() -> Result<()> {
 
     let config_content = fs::read_to_string(config_path)
         .context("Failed to read .onix/config.yaml")?;
-    let config: AppConfig = serde_yaml::from_str(&config_content)
+    let mut config: AppConfig = serde_yaml::from_str(&config_content)
         .context("Failed to parse .onix/config.yaml")?;
+
+    // If a version override is provided, update the config and save it
+    if let Some(v) = version_arg {
+        config.app.version = v;
+        let yaml = serde_yaml::to_string(&config)
+            .context("Failed to serialize updated configuration")?;
+        fs::write(config_path, yaml)
+            .context("Failed to save updated version to .onix/config.yaml")?;
+    }
 
     let tag_name = format!("v{}", config.app.version);
     println!("🚀 Preparing to publish {} version {}...", config.app.name, tag_name);
@@ -83,8 +92,8 @@ pub async fn execute() -> Result<()> {
 println!("📤 Uploading install.onix to GitHub Release...");
     octo.repos(&owner, &repo_name)
         .releases()
-        .upload_asset(release.id.0, "install.onix", manifest_content.into())
-        .send() 
+        .upload_asset(*release.id, "install.onix", manifest_content.into())
+        .send()
         .await
         .context("Failed to upload manifest to release")?;
         
@@ -126,7 +135,7 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let mut progress = 0;
     let mut status_msg = String::from("Initializing poll...");
     let mut debug_info = String::from("No runs found yet.");
-    let mut last_api_poll = Instant::now() - Duration::from_secs(5); // Trigger first poll immediately
+    let mut last_api_poll = Instant::now() - Duration::from_secs(6); // Trigger first poll immediately
 
     // Use an async block to ensure terminal cleanup happens even on error
     let poll_result: Result<()> = async {
@@ -178,16 +187,17 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
 
                 // Update debug info with the latest run found on GitHub
                 if let Some(first) = runs.items.first() {
+                    let branch_name = &first.head_branch;
                     debug_info = format!(
                         "ID: {}\nBranch: {:?}\nSHA: {}\nStatus: {}", 
-                        first.id, first.head_branch, first.head_sha, first.status
+                        first.id, branch_name, first.head_sha, first.status
                     );
                 } else {
                     debug_info = "GitHub returned 0 workflow runs.".to_string();
                 }
 
                 let target_run = runs.items.iter().find(|r| {
-                    r.head_branch == tag || r.head_sha == tag
+                    r.head_branch == tag || r.head_sha.contains(tag) || r.head_sha == tag
                 });
 
                 match target_run {
@@ -337,7 +347,7 @@ fn save_token(token: &str) -> Result<()> {
     let gitignore_path = Path::new(".gitignore");
     let pattern = ".onix/token.key";
     
-    let mut content = if gitignore_path.exists() {
+    let content = if gitignore_path.exists() {
         fs::read_to_string(gitignore_path)?
     } else {
         String::new()

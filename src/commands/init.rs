@@ -5,6 +5,54 @@ use crate::manifest_generator::{
     AppConfig, AppInfo, BuildConfig, InstallConfig, PermissionConfig, TargetConfig,
 };
 
+const RELEASE_WORKFLOW_TEMPLATE: &str = r#"name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x86_64
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: macos-latest
+            target: macos-arm64
+          - os: macos-13
+            target: macos-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Rename Artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp target/release/{{BIN_NAME}}.exe dist/{{BIN_NAME}}-${{ matrix.target }}.exe
+          else
+            cp target/release/{{BIN_NAME}} dist/{{BIN_NAME}}-${{ matrix.target }}
+          fi
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+"#;
+
 pub fn execute() -> Result<()> {
     let onix_dir = Path::new(".onix");
     let config_path = onix_dir.join("config.yaml");
@@ -39,15 +87,15 @@ pub fn execute() -> Result<()> {
             output_name: project_name.clone(),
         },
         targets: vec![
-            TargetConfig { os: "linux".to_string(), arch: "amd64".to_string() },
-            TargetConfig { os: "linux".to_string(), arch: "arm64".to_string() },
+            TargetConfig { os: "linux".to_string(), arch: "x86_64".to_string() },
+            TargetConfig { os: "macos".to_string(), arch: "x86_64".to_string() },
             TargetConfig { os: "macos".to_string(), arch: "arm64".to_string() },
-            TargetConfig { os: "windows".to_string(), arch: "amd64".to_string() },
+            TargetConfig { os: "windows".to_string(), arch: "x86_64".to_string() },
         ],
         install: InstallConfig {
             file_type: "binary".to_string(),
             target_dir: "~/.local/bin".to_string(),
-            bin_name: project_name,
+            bin_name: project_name.clone(),
         },
         permissions: vec![
             PermissionConfig {
@@ -67,6 +115,16 @@ pub fn execute() -> Result<()> {
 
     let yaml = serde_yaml::to_string(&default_config).context("Failed to serialize default configuration")?;
     fs::write(config_path, yaml).context("Failed to write .onix/config.yaml")?;
+
+    // Create GitHub Actions workflow directory and file
+    let workflow_dir = Path::new(".github/workflows");
+    if !workflow_dir.exists() {
+        fs::create_dir_all(workflow_dir).context("Failed to create .github/workflows directory")?;
+    }
+
+    let workflow_path = workflow_dir.join("release.yml");
+    let rendered_workflow = RELEASE_WORKFLOW_TEMPLATE.replace("{{BIN_NAME}}", &project_name);
+    fs::write(workflow_path, rendered_workflow).context("Failed to write GitHub Action workflow file")?;
 
     println!("🚀 Successfully initialized! Edit .onix/config.yaml to customize your distribution.");
     Ok(())

@@ -5,18 +5,45 @@
 [![Status](https://img.shields.io/badge/status-alpha-red.svg)](#)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#)
 
+Onix is not a package manager, not a registry, and it does not execute remote installation scripts (no `curl | sh`). No new ecosystem required.
 
 # One-liner
 
->Onix lets you preview, verify, and approve every system change before installing any CLI tool.
+> Onix installs CLI tools through a verifiable, declarative protocol that lets you preview, approve, and control every system change before it happens.
 
 ## The Problem
-Installing a new standalone CLI tool today usually involves one of two extremes:
-1. **The Risk:** Running `curl | sh` scripts with blind trust.
-2. **The Friction:** Wrestling with OS-specific package managers (Homebrew, APT, Winget) or language-specific ones (NPM, Cargo) that often come with heavy dependency chains.
+
+Installing standalone CLI tools today usually forces a tradeoff between trust and convenience:
+
+1. **The Risk:**  
+   Running `curl | sh`-style installers that execute remote code with no structured review or guarantees.
+
+2. **The Friction:**  
+   Using OS-specific or language-specific package managers (Homebrew, APT, Winget, NPM, Cargo), which often introduce:
+   - ecosystem lock-in  
+   - dependency overhead  
+   - inconsistent installation behavior across platforms  
+
+In both cases, installation is either opaque or unnecessarily complex.
 
 ## The Onix Solution
-Onix bridges the gap. It provides the convenience of a one-liner installation with the security of a declarative protocol. 
+
+Onix introduces a **declarative installation protocol for CLI binaries**.
+
+Instead of executing scripts or relying on package ecosystems, Onix:
+- resolves a published release artifact
+- verifies integrity (e.g. checksums)
+- shows a transparent installation plan
+- requires explicit user approval before making system changes
+
+This combines the simplicity of a single command with the safety of a structured, inspectable installation flow.
+
+## Design Principles
+
+- **No hidden execution:** Onix never runs remote code. No curl/irm hacks.
+- **Explicit changes:** Every system modification is shown before execution.
+- **Artifact-first:** Software is distributed as verifiable binaries, not scripts.
+- **User-controlled installs:** Nothing is installed without explicit approval.
 
 ### Key Features
 - **🛡️ Trust-First:** Every installation requires explicit user consent via a TUI permission prompt.
@@ -51,7 +78,7 @@ permissions:
 ```
 
 ### 2. The Safe Install
-When a user runs `onix install <url>`, Onix:
+When a user runs `onix install user@repo`, Onix:
 1. Fetches and validates the manifest.
 2. Matches the architecture and OS.
 3. **Displays a TUI prompt** showing exactly which files will be written and which environment variables will change.

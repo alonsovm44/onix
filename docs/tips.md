@@ -181,3 +181,44 @@ Boring = good here. It means predictable, trusted infrastructure.
 🧩 One-line summary of your idea (refined)
 
 Onix is a secure, declarative installation protocol for standalone CLI binaries, designed to replace unsafe install scripts with verifiable, cross-platform installs.
+
+# design desitions
+
+Option B (better)
+
+Detect current branch:
+
+git rev-parse --abbrev-ref HEAD
+
+Then push that branch.
+
+✔ safer for real projects
+✔ works with feature branches
+✔ more professional CLI tool behavior
+
+🛡️ Safety features you SHOULD include
+
+This command can destroy workflows if careless, so add guards:
+
+1. Prevent double versioning
+
+If tag already exists:
+
+❌ Tag v1.2.3 already exists
+2. Confirm before pushing
+About to:
+- commit changes
+- create tag v1.2.3
+- push to origin
+
+Proceed? (y/n)
+3. Optional dry-run mode
+onix publish --v 1.2.3 --dry-run
+
+Output:
+
+Would run:
+git add .
+git commit ...
+git tag ...
+git push ...
