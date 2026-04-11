@@ -41,7 +41,7 @@ pub async fn execute() -> Result<()> {
         .context("Failed to open git repository. 'onix publish' must be run inside a git repo.")?;
 
     // 3. Automated Git Workflow: Stage, Commit, Push, Tag, and Push Tag
-    println!("📦 Staging and committing changes...");
+    println!("📦 Staging and committing changes..."); 
     run_git(&["add", "."])?;
     // Ignore commit error if there's nothing new to commit
     let _ = run_git(&["commit", "-m", &format!("release: {}", tag_name)]);
