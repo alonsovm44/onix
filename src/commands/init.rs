@@ -76,6 +76,13 @@ pub fn execute() -> Result<()> {
         .unwrap_or("my-app")
         .to_string();
 
+    // Set the platform-specific toolset root
+    let toolset_root = if cfg!(windows) {
+        "C:\\onix".to_string()
+    } else {
+        "/mnt/bin/onix".to_string()
+    };
+
     let default_config = AppConfig {
         app: AppInfo {
             name: project_name.clone(),
@@ -94,14 +101,14 @@ pub fn execute() -> Result<()> {
         ],
         install: InstallConfig {
             file_type: "binary".to_string(),
-            target_dir: "~/.local/bin".to_string(),
+            target_dir: toolset_root.clone(),
             bin_name: project_name.clone(),
         },
         permissions: vec![
             PermissionConfig {
                 r#type: "filesystem".to_string(),
                 action: "write".to_string(),
-                path: Some("~/.local/bin".to_string()),
+                path: Some(toolset_root.clone()),
                 variable: None,
             },
             PermissionConfig {
@@ -116,6 +123,12 @@ pub fn execute() -> Result<()> {
     let yaml = serde_yaml::to_string(&default_config).context("Failed to serialize default configuration")?;
     fs::write(config_path, yaml).context("Failed to write .onix/config.yaml")?;
 
+    // Create the deprecated subfolder in the toolset root
+    let deprecated_dir = Path::new(&toolset_root).join("deprecated");
+    if !deprecated_dir.exists() {
+        fs::create_dir_all(&deprecated_dir).context("Failed to create deprecated directory")?;
+    }
+
     // Create GitHub Actions workflow directory and file
     let workflow_dir = Path::new(".github/workflows");
     if !workflow_dir.exists() {
@@ -126,6 +139,7 @@ pub fn execute() -> Result<()> {
     let rendered_workflow = RELEASE_WORKFLOW_TEMPLATE.replace("{{BIN_NAME}}", &project_name);
     fs::write(workflow_path, rendered_workflow).context("Failed to write GitHub Action workflow file")?;
 
-    println!("🚀 Successfully initialized! Edit .onix/config.yaml to customize your distribution.");
+    println!("🚀 Successfully initialized at {}!", toolset_root);
+    println!("💡 Active binaries will be kept in the root, with older versions moved to the 'deprecated' subfolder.");
     Ok(())
 }

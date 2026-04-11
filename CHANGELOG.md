@@ -2,6 +2,7 @@
 
 Added:
 
+- added onix folder to store projects and deprecated folder
 - added tui for install
 - added support for main and master naming conventions
 - added tui for inspect
