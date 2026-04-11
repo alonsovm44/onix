@@ -92,8 +92,8 @@ pub fn execute() -> Result<()> {
         },
         targets: vec![
             TargetConfig { os: "linux".to_string(), arch: "x86_64".to_string() },
-            TargetConfig { os: "macos".to_string(), arch: "x86_64".to_string() },
             TargetConfig { os: "macos".to_string(), arch: "arm64".to_string() },
+            TargetConfig { os: "macos".to_string(), arch: "x86_64".to_string() },
             TargetConfig { os: "windows".to_string(), arch: "x86_64".to_string() },
         ],
         install: InstallConfig {

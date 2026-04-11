@@ -33,10 +33,15 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match &cli.command {
-        Commands::Init => commands::init::execute()?,
-        Commands::Publish { version } => commands::publish::execute(version.clone()).await?,
-        Commands::Install { repo } => commands::install::execute(repo.clone()).await?,
+    let result = match &cli.command {
+        Commands::Init => commands::init::execute(),
+        Commands::Publish { version } => commands::publish::execute(version.clone()).await,
+        Commands::Install { repo } => commands::install::execute(repo.clone()).await,
+    };
+
+    if let Err(e) = result {
+        eprintln!("\n❌ Error: {:?}", e);
+        std::process::exit(1);
     }
 
     Ok(())
