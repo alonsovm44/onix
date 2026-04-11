@@ -78,7 +78,8 @@ pub fn generate_install_manifest(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut install_on_entries = Vec::new();
     for target in &config.targets {
-        let filename = format!("{}-{}-{}", config.build.output_name, target.os, target.arch);
+        let extension = if target.os == "windows" { ".exe" } else { "" };
+        let filename = format!("{}-{}-{}{}", config.build.output_name, target.os, target.arch, extension);
         let url = format!("https://github.com/{}/{}/releases/download/{}/{}", owner, repo, tag, filename);
         let sha256 = binary_checksums.get(&(target.os.clone(), target.arch.clone()))
             .ok_or_else(|| format!("SHA256 not found for target: {}/{}", target.os, target.arch))?.clone();
