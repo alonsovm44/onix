@@ -16,12 +16,12 @@ targets:
   arch: x86_64
 install:
   file_type: binary
-  target_dir: ~/.local/bin
+  target_dir: C:\onix
   bin_name: onix
 permissions:
 - type: filesystem
   action: write
-  path: ~/.local/bin
+  path: C:\onix
   variable: null
 - type: environment
   action: modify

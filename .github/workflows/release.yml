@@ -33,11 +33,12 @@ jobs:
       - name: Rename Artifact
         shell: bash
         run: |
+          BIN_NAME=$(grep -m 1 'name:' .onix/config.yaml | awk '{print $2}')
           mkdir -p dist
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/release/onix.exe dist/onix-${{ matrix.target }}.exe
+            cp target/release/$BIN_NAME.exe dist/$BIN_NAME-${{ matrix.target }}.exe
           else
-            cp target/release/onix dist/onix-${{ matrix.target }}
+            cp target/release/$BIN_NAME dist/$BIN_NAME-${{ matrix.target }}
           fi
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
