@@ -21,7 +21,7 @@ use crossterm::{
 };
 use crate::manifest_generator::{AppConfig};
 
-pub async fn execute(version_arg: Option<String>) -> Result<()> {
+pub async fn execute(version_arg: Option<String>, _debug: bool, dry_run: bool) -> Result<()> {
     // 1. Load configuration to get the current version
     let config_path = Path::new(".onix/config.yaml");
     if !config_path.exists() {
@@ -51,14 +51,14 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
 
     // 3. Automated Git Workflow: Stage, Commit, Push, Tag, and Push Tag
     println!("📦 Staging and committing changes..."); 
-    run_git(&["add", "."])?;
+    run_git(&["add", "."], dry_run)?;
     // Ignore commit error if there's nothing new to commit
-    let _ = run_git(&["commit", "-m", &format!("release: {}", tag_name)]);
-    run_git(&["push"])?;
+    let _ = run_git(&["commit", "-m", &format!("release: {}", tag_name)], dry_run);
+    run_git(&["push"], dry_run)?;
 
     println!("🏷️ Creating and pushing tag {}...", tag_name);
-    run_git(&["tag", "-f", &tag_name])?;
-    run_git(&["push", "origin", &tag_name, "-f"])?;
+    run_git(&["tag", "-f", &tag_name], dry_run)?;
+    run_git(&["push", "origin", &tag_name, "-f"], dry_run)?;
 
     // 5. Extract GitHub Info
     let (owner, repo_name) = get_repo_remote_info(&repo)?;
@@ -89,13 +89,17 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
         &config, &owner, &repo_name, &tag_name, &checksums
     ).map_err(|e| anyhow!(e.to_string()))?;
 
-println!("📤 Uploading install.onix to GitHub Release...");
-    octo.repos(&owner, &repo_name)
-        .releases()
-        .upload_asset(*release.id, "install.onix", manifest_content.into())
-        .send()
-        .await
-        .context("Failed to upload manifest to release")?;
+    if !dry_run {
+        println!("📤 Uploading install.onix to GitHub Release...");
+        octo.repos(&owner, &repo_name)
+            .releases()
+            .upload_asset(*release.id, "install.onix", manifest_content.into())
+            .send()
+            .await
+            .context("Failed to upload manifest to release")?;
+    } else {
+        println!("✨ [DRY RUN] Skipping manifest upload to GitHub Release.");
+    }
         
     println!("🚀 Version {} successfully published!", config.app.version);
     Ok(())
@@ -263,7 +267,12 @@ async fn fetch_and_hash_assets(
 }
 
 /// Helper to run git commands and handle errors.
-fn run_git(args: &[&str]) -> Result<()> {
+fn run_git(args: &[&str], dry_run: bool) -> Result<()> {
+    if dry_run {
+        println!("  [DRY RUN] git {}", args.join(" "));
+        return Ok(());
+    }
+
     let status = Command::new("git")
         .args(args)
         .status()

@@ -20,7 +20,14 @@ enum Commands {
     /// Publish a new release (builds, tags, and generates manifest)
     Publish {
         /// Optional version to publish (overrides config)
+        #[arg(short = 'v', long = "version-override", long = "v")]
         version: Option<String>,
+        /// Output a JSON debug report to the console and a file
+        #[arg(long)]
+        debug: bool,
+        /// Show what would happen without executing Git commands or modifying files
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Install a package from a GitHub repository
     Install {
@@ -35,7 +42,7 @@ async fn main() -> Result<()> {
 
     let result = match &cli.command {
         Commands::Init => commands::init::execute(),
-        Commands::Publish { version } => commands::publish::execute(version.clone()).await,
+        Commands::Publish { version, debug, dry_run } => commands::publish::execute(version.clone(), *debug, *dry_run).await,
         Commands::Install { repo } => commands::install::execute(repo.clone()).await,
     };
 

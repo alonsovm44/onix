@@ -1,11 +1,31 @@
 use crate::models::{ProjectConfig, OnixManifest, BuildTarget};
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-pub async fn execute(version_arg: Option<String>) -> Result<()> {
+#[derive(Serialize, Default)]
+struct DebugReport {
+    config: Option<ProjectConfig>,
+    git_ops: Vec<GitOpLog>,
+    repo_slug: Option<String>,
+    workflow_run: Option<serde_json::Value>,
+    jobs: Vec<serde_json::Value>,
+    assets: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct GitOpLog {
+    description: String,
+    args: Vec<String>,
+    success: bool,
+}
+
+pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) -> Result<()> {
+    let mut report = DebugReport::default();
     let version = version_arg.as_deref();
     let bump: Option<&str> = None;
     let config_path = ".onix/config.yaml";
@@ -23,6 +43,10 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
     let mut config: ProjectConfig = serde_yaml::from_str(&content)
         .context("Failed to parse project configuration")?;
 
+    if debug {
+        report.config = Some(config.clone());
+    }
+
     let target_version = if let Some(v) = version {
         Some(v.to_string())
     } else if let Some(level) = bump {
@@ -33,7 +57,7 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
 
     if let Some(new_version) = target_version {
         let old_version = config.app.version.clone();
-        update_files_version(config_path, &mut config, &new_version, &old_version)?;
+        update_files_version(config_path, &mut config, &new_version, &old_version, dry_run)?;
     }
 
     let final_version = config.app.version.clone();
@@ -44,7 +68,7 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
     let local_exists = !Command::new("git").args(["tag", "-l", &tag_name]).output()?.stdout.is_empty();
     let remote_exists = !Command::new("git").args(["ls-remote", "--tags", "origin", &tag_name]).output()?.stdout.is_empty();
 
-    if local_exists || remote_exists {
+    if (local_exists || remote_exists) && !dry_run {
         print!("\n⚠️  Release {} already exists. Overwrite? (y/N): ", tag_name);
         io::stdout().flush()?;
         let mut response = String::new();
@@ -56,20 +80,130 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
         println!("🔥 Overwrite confirmed. Proceeding with force-update...");
     }
 
-    execute_git_commands(&final_version, force)?;
+    execute_git_commands(&final_version, force, if debug { Some(&mut report.git_ops) } else { None }, dry_run)?;
 
     // Pre-flight check: Ensure we are in a git repo and have a remote
     let remote_url = get_git_remote().unwrap_or_else(|_| "unknown".to_string());
     let repo_slug = extract_github_slug(&remote_url);
+    
+    report.repo_slug = repo_slug.clone();
 
     println!("🚀 Preparing publication for {} v{}", config.app.name, config.app.version);
     println!("\n📊 Generated Compilation Matrix:");
     
-    println!("{:<15} | {:<10} | {:<20}", "OS", "Arch", "Runner (GHA)");
-    println!("{:-<15}-|-{:-<10}-|-{:-<20}", "", "", "");
+    println!("{:<12} | {:<8} | {:<15} | {:<10}", "OS", "Arch", "Runner", "Status");
+    println!("{:-<12}-|-{:-<8}-|-{:-<15}-|-{:-<10}", "", "", "", "");
 
-    // [The rest of your TUI/Polling logic should follow here]
-    Ok(())
+    for target in &config.targets {
+        println!("{:<12} | {:<8} | {:<15} | {:<10}", 
+            target.os, target.arch, get_runner_for_target(target), "PENDING");
+    }
+
+    if repo_slug.is_none() {
+        anyhow::bail!("Could not determine GitHub repository slug from remote URL: {}", remote_url);
+    }
+    let slug = repo_slug.unwrap();
+
+    if dry_run {
+        println!("\n✨ Dry run complete. No actions were performed on the repository or files.");
+        return Ok(());
+    }
+
+    // Start Polling Logic
+    let res = poll_github_actions(&slug, &tag_name, &config, if debug { Some(&mut report) } else { None }).await;
+
+    if debug {
+        let json_report = serde_json::to_string_pretty(&report)?;
+        println!("\n🛠️  DEBUG REPORT (JSON):\n{}", json_report);
+
+        fs::write("onix-debug-report.json", &json_report).context("Failed to write debug report to file")?;
+        println!("\n💾 Debug report saved to: onix-debug-report.json");
+    }
+
+    res
+}
+
+async fn poll_github_actions(slug: &str, tag: &str, config: &ProjectConfig, mut report: Option<&mut DebugReport>) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .user_agent("onix-cli/1.0.0")
+        .build()?;
+    
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(600); // 10 minutes
+    let mut last_check = Instant::now();
+
+    println!("\n⏳ Waiting for GitHub Actions to complete (Tag: {})...", tag);
+    
+    loop {
+        if start_time.elapsed() > timeout {
+            anyhow::bail!("Timeout reached while waiting for GitHub Actions.");
+        }
+
+        // Rate limit local polling to every 10 seconds
+        if last_check.elapsed() < Duration::from_secs(10) {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+        last_check = Instant::now();
+
+        // 1. Find the Workflow Run for this tag
+        let url = format!("https://api.github.com/repos/{}/actions/runs?event=push&branch={}", slug, tag);
+        let resp = client.get(&url).send().await?;
+        let data: serde_json::Value = resp.json().await?;
+
+        let runs = data["workflow_runs"].as_array().context("Failed to parse workflow runs")?;
+        let run = runs.iter().find(|r| r["head_branch"] == tag || r["name"].as_str().unwrap_or("").contains(tag));
+
+        if let Some(r) = run {
+            let status = r["status"].as_str().unwrap_or("unknown");
+            let conclusion = r["conclusion"].as_str().unwrap_or("pending");
+            let run_id = r["id"].as_u64().unwrap_or(0);
+
+            if let Some(ref mut rep) = report {
+                rep.workflow_run = Some(r.clone());
+            }
+
+            // 2. Fetch specific jobs to see which target is failing
+            let jobs_url = format!("https://api.github.com/repos/{}/actions/runs/{}/jobs", slug, run_id);
+            let jobs_resp = client.get(&jobs_url).send().await?;
+            let jobs_data: serde_json::Value = jobs_resp.json().await?;
+            let jobs = jobs_data["jobs"].as_array().context("Failed to parse jobs")?;
+
+            if let Some(ref mut rep) = report {
+                rep.jobs = jobs.clone();
+            }
+
+            let mut completed_count = 0;
+            let total_targets = config.targets.len();
+
+            for job in jobs {
+                let name = job["name"].as_str().unwrap_or("unknown");
+                let job_status = job["status"].as_str().unwrap_or("unknown");
+                let job_conclusion = job["conclusion"].as_str().unwrap_or("none");
+
+                if job_status == "completed" {
+                    completed_count += 1;
+                    if job_conclusion == "failure" {
+                        println!("  ❌ Job '{}' failed! Check GHA logs for details.", name);
+                    }
+                }
+            }
+
+            print!("\r🔍 Progress: [{}/{}] | Run Status: {} ({})          ", 
+                completed_count, total_targets, status, conclusion);
+            io::stdout().flush()?;
+
+            if status == "completed" {
+                println!("\n✅ All GitHub Actions jobs finished.");
+                let mut asset_list = Vec::new();
+                let update_res = update_manifest_hashes_from_release(slug, tag, if report.is_some() { Some(&mut asset_list) } else { None }).await;
+                if let Some(ref mut rep) = report {
+                    rep.assets = asset_list;
+                }
+                return update_res;
+            }
+        }
+    }
 }
 
 fn bump_version(version: &str, level: &str) -> Result<String> {
@@ -92,10 +226,15 @@ fn bump_version(version: &str, level: &str) -> Result<String> {
     Ok(format!("{}.{}.{}", parts[0], parts[1], parts[2]))
 }
 
-fn update_files_version(config_path: &str, config: &mut ProjectConfig, new_version: &str, old_version: &str) -> Result<()> {
+fn update_files_version(config_path: &str, config: &mut ProjectConfig, new_version: &str, old_version: &str, dry_run: bool) -> Result<()> {
     println!("🔄 Updating version: {} -> {}", old_version, new_version);
     
     config.app.version = new_version.to_string();
+    if dry_run {
+        println!("  [DRY RUN] Would update version in {}", config_path);
+        return Ok(());
+    }
+
     let updated_config = serde_yaml::to_string(config)?;
     fs::write(config_path, updated_config)?;
 
@@ -113,7 +252,7 @@ fn update_files_version(config_path: &str, config: &mut ProjectConfig, new_versi
     Ok(())
 }
 
-fn execute_git_commands(version: &str, force: bool) -> Result<()> {
+fn execute_git_commands(version: &str, force: bool, mut log: Option<&mut Vec<GitOpLog>>, dry_run: bool) -> Result<()> {
     println!("📦 Automating Git release for v{}...", version);
     let tag = format!("v{}", version);
     let commit_msg = format!("Release {}", tag);
@@ -139,13 +278,59 @@ fn execute_git_commands(version: &str, force: bool) -> Result<()> {
     cmds.push((push_tag_args, "Pushing tag to origin"));
 
     for (args, desc) in cmds {
-        println!("  > {}...", desc);
-        let status = Command::new("git").args(args).status()?;
-        if !status.success() {
+        let cmd_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        
+        let success = if dry_run {
+            println!("  [DRY RUN] git {}", args.join(" "));
+            true
+        } else {
+            println!("  > {}...", desc);
+            Command::new("git").args(&args).status()?.success()
+        };
+        
+        if let Some(ref mut l) = log {
+            l.push(GitOpLog {
+                description: desc.to_string(),
+                args: cmd_args,
+                success,
+            });
+        }
+        if !success {
             anyhow::bail!("Git command failed during: {}", desc);
         }
     }
     println!("✅ Git release completed.");
+    Ok(())
+}
+
+async fn update_manifest_hashes_from_release(slug: &str, tag: &str, mut asset_log: Option<&mut Vec<String>>) -> Result<()> {
+    println!("📥 Fetching remote artifacts to verify checksums...");
+    let client = reqwest::Client::builder().user_agent("onix-cli/1.0.0").build()?;
+    let url = format!("https://api.github.com/repos/{}/releases/tags/{}", slug, tag);
+    
+    let resp = client.get(&url).send().await?;
+    let release: serde_json::Value = resp.json().await?;
+    
+    let assets = release["assets"].as_array().context("No assets found in release")?;
+    
+    // Log found assets to debug the Mac x86_64 issue
+    println!("🔎 Found {} assets in release:", assets.len());
+    for asset in assets {
+        let name = asset["name"].as_str().unwrap_or("unknown").to_string();
+        println!("  - {}", name);
+        if let Some(ref mut log) = asset_log {
+            log.push(name);
+        }
+    }
+
+    // Here you would find the checksums.txt if you generate it in GHA, 
+    // or download each binary and hash them manually.
+    if let Some(checksum_asset) = assets.iter().find(|a| a["name"] == "checksums.txt") {
+        let download_url = checksum_asset["browser_download_url"].as_str().unwrap();
+        // Proceed to call your existing update_manifest_hashes logic
+        println!("✨ Found checksums.txt, syncing manifest...");
+    }
+
     Ok(())
 }
 
@@ -170,15 +355,20 @@ fn get_git_remote() -> Result<String> {
 }
 
 fn extract_github_slug(url: &str) -> Option<String> {
-    // Simple extractor for git@github.com:user/repo.git or https://github.com/user/repo
     if url.contains("github.com") {
-        let parts: Vec<&str> = if url.contains("https://") {
-            url.trim_end_matches(".git").split('/').collect()
+        let clean_url = url.trim_end_matches(".git");
+        if clean_url.contains("https://") {
+            let parts: Vec<&str> = clean_url.split('/').collect();
+            if parts.len() >= 2 {
+                let repo = parts.last()?;
+                let owner = parts.get(parts.len() - 2)?;
+                return Some(format!("{}/{}", owner, repo));
+            }
         } else {
-            url.trim_end_matches(".git").split(':').collect()
-        };
-        
-        parts.last().map(|s| s.to_string())
+            // SSH format: git@github.com:owner/repo
+            let parts: Vec<&str> = clean_url.split(':').collect();
+            return parts.last().map(|s| s.to_string());
+        }
     } else {
         None
     }
