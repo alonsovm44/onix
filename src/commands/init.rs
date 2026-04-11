@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use crate::manifest_generator::{
     AppConfig, AppInfo, BuildConfig, InstallConfig, PermissionConfig, TargetConfig,
 };
+use crate::utils::get_toolset_root;
 
 const RELEASE_WORKFLOW_TEMPLATE: &str = r#"name: Release
 
@@ -76,12 +77,8 @@ pub fn execute() -> Result<()> {
         .unwrap_or("my-app")
         .to_string();
 
-    // Set the platform-specific toolset root
-    let toolset_root = if cfg!(windows) {
-        "C:\\onix".to_string()
-    } else {
-        "/mnt/bin/onix".to_string()
-    };
+    let toolset_root = get_toolset_root();
+    let toolset_root_str = toolset_root.to_string_lossy().into_owned();
 
     let default_config = AppConfig {
         app: AppInfo {
@@ -101,14 +98,14 @@ pub fn execute() -> Result<()> {
         ],
         install: InstallConfig {
             file_type: "binary".to_string(),
-            target_dir: toolset_root.clone(),
+            target_dir: toolset_root_str.clone(),
             bin_name: project_name.clone(),
         },
         permissions: vec![
             PermissionConfig {
                 r#type: "filesystem".to_string(),
                 action: "write".to_string(),
-                path: Some(toolset_root.clone()),
+                path: Some(toolset_root_str.clone()),
                 variable: None,
             },
             PermissionConfig {
@@ -124,7 +121,7 @@ pub fn execute() -> Result<()> {
     fs::write(config_path, yaml).context("Failed to write .onix/config.yaml")?;
 
     // Create the deprecated subfolder in the toolset root
-    let deprecated_dir = Path::new(&toolset_root).join("deprecated");
+    let deprecated_dir = toolset_root.join("deprecated");
     if !deprecated_dir.exists() {
         fs::create_dir_all(&deprecated_dir).context("Failed to create deprecated directory")?;
     }
@@ -139,7 +136,7 @@ pub fn execute() -> Result<()> {
     let rendered_workflow = RELEASE_WORKFLOW_TEMPLATE.replace("{{BIN_NAME}}", &project_name);
     fs::write(workflow_path, rendered_workflow).context("Failed to write GitHub Action workflow file")?;
 
-    println!("🚀 Successfully initialized at {}!", toolset_root);
+    println!("🚀 Successfully initialized at {:?}!", toolset_root);
     println!("💡 Active binaries will be kept in the root, with older versions moved to the 'deprecated' subfolder.");
     Ok(())
 }

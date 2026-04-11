@@ -3,6 +3,7 @@ use anyhow::Result;
 
 mod commands;
 mod manifest_generator;
+mod utils;
 
 #[derive(Parser)]
 #[command(name = "onix")]

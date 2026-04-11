@@ -1,17 +1,12 @@
 use std::fs;
-use std::path::PathBuf;
 use anyhow::{Context, Result};
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::utils::get_toolset_root;
 
 pub async fn execute(repo: String) -> Result<()> {
     println!("Searching for package in: {}...", repo);
 
-    // 1. Determine toolset root (logic consistent with init)
-    let toolset_root = if cfg!(windows) {
-        PathBuf::from(r"C:\onix")
-    } else {
-        PathBuf::from("/mnt/bin/onix")
-    };
+    let toolset_root = get_toolset_root();
 
     // For the sake of the logic, we extract the app name from the repo string
     // (e.g., "user/my-app" -> "my-app")
