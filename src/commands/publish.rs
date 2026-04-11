@@ -125,6 +125,7 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
 
     let mut progress = 0;
     let mut status_msg = String::from("Initializing poll...");
+    let mut debug_info = String::from("No runs found yet.");
     let mut last_api_poll = Instant::now() - Duration::from_secs(5); // Trigger first poll immediately
 
     // Use an async block to ensure terminal cleanup happens even on error
@@ -160,7 +161,8 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
 
                 // Add a simple animated "polling" indicator so the UI doesn't look frozen
                 let dots = ".".repeat((Instant::now().elapsed().as_secs() % 4) as usize);
-                let text = format!("Status: {}{}\n(Press 'q' or Ctrl+C to abort)", status_msg, dots);
+                let text = format!("Status: {}{}\nTarget: {}\n\nDebug (Last run seen):\n{}\n\n(Press 'q' or Ctrl+C to abort)", 
+                    status_msg, dots, tag, debug_info);
                 let paragraph = Paragraph::new(text)
                     .block(Block::default().title("Activity").borders(Borders::ALL));
                 f.render_widget(paragraph, chunks[1]);
@@ -173,6 +175,16 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                     .send()
                     .await
                     .context("Failed to fetch workflow runs from GitHub")?;
+
+                // Update debug info with the latest run found on GitHub
+                if let Some(first) = runs.items.first() {
+                    debug_info = format!(
+                        "ID: {}\nBranch: {:?}\nSHA: {}\nStatus: {}", 
+                        first.id, first.head_branch, first.head_sha, first.status
+                    );
+                } else {
+                    debug_info = "GitHub returned 0 workflow runs.".to_string();
+                }
 
                 let target_run = runs.items.iter().find(|r| {
                     r.head_branch == tag || r.head_sha == tag
