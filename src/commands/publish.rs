@@ -1,7 +1,7 @@
 use std::{fs, env, io, fs::OpenOptions, io::Write};
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow};
 use git2::Repository;
@@ -126,19 +126,21 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let mut attempt = 0;
     let mut progress = 0;
     let mut status_msg = String::from("Initializing poll...");
+    let mut last_api_poll = Instant::now() - Duration::from_secs(5); // Trigger first poll immediately
 
     let result = loop {
-        attempt += 1;
-
-        // Handle user input to allow quitting
-        if event::poll(Duration::from_millis(100))? {
+        // 1. Handle user input (runs every iteration for responsiveness)
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break Err(anyhow!("Publishing aborted by user."));
+                if key.kind == KeyEventKind::Press {
+                    if key.code == KeyCode::Char('q') {
+                        break Err(anyhow!("Publishing aborted by user."));
+                    }
                 }
             }
         }
 
+        // 2. Draw TUI
         terminal.draw(|f| {
             let size = f.size();
             let chunks = Layout::default()
@@ -159,39 +161,42 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
             f.render_widget(paragraph, chunks[1]);
         })?;
         
-        let runs = octo.workflows(owner, repo)
-            .list_all_runs()
-            .send()
-            .await
-            .context("Failed to fetch workflow runs from GitHub")?;
+        // 3. Poll GitHub API (Only runs every 5 seconds)
+        if last_api_poll.elapsed() >= Duration::from_secs(5) {
+            attempt += 1;
+            let runs = octo.workflows(owner, repo)
+                .list_all_runs()
+                .send()
+                .await
+                .context("Failed to fetch workflow runs from GitHub")?;
 
-        let target_run = runs.items.iter().find(|r| {
-            r.head_branch == tag || r.head_sha == tag
-        });
+            let target_run = runs.items.iter().find(|r| {
+                r.head_branch == tag || r.head_sha == tag
+            });
 
-        match target_run {
-            Some(run) => {
-                match run.status.as_str() {
-                    "completed" => {
-                        if run.conclusion.as_deref() == Some("success") {
-                            progress = 100;
-                            status_msg = "✅ CI Build Completed Successfully!".into();
-                            sleep(Duration::from_secs(1)).await;
-                            break Ok(());
-                        } else {
-                            break Err(anyhow!("CI failed: {:?}", run.conclusion));
+            match target_run {
+                Some(run) => {
+                    match run.status.as_str() {
+                        "completed" => {
+                            if run.conclusion.as_deref() == Some("success") {
+                                progress = 100;
+                                status_msg = "✅ CI Build Completed Successfully!".into();
+                                sleep(Duration::from_secs(1)).await;
+                                break Ok(());
+                            } else {
+                                break Err(anyhow!("CI failed: {:?}", run.conclusion));
+                            }
+                        }
+                        _ => {
+                            progress = 50;
+                            status_msg = format!("🔨 CI Status: {}", run.status);
                         }
                     }
-                    _ => {
-                        progress = 50;
-                        status_msg = format!("🔨 CI Status: {}", run.status);
-                    }
                 }
+                None => status_msg = "⏳ Waiting for GitHub to register the tag...".into(),
             }
-            None => status_msg = "⏳ Waiting for GitHub to register the tag...".into(),
+            last_api_poll = Instant::now();
         }
-
-        sleep(Duration::from_secs(5)).await;
     };
 
     // Teardown TUI
