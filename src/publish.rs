@@ -1,10 +1,13 @@
 use crate::models::{ProjectConfig, OnixManifest, BuildTarget};
 use anyhow::{Context, Result};
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-pub fn run_publish(bump: Option<&str>, version: Option<&str>) -> Result<()> {
+pub async fn execute(version_arg: Option<String>) -> Result<()> {
+    let version = version_arg.as_deref();
+    let bump: Option<&str> = None;
     let config_path = ".onix/config.yaml";
     
     if !std::path::Path::new(config_path).exists() {
@@ -33,7 +36,26 @@ pub fn run_publish(bump: Option<&str>, version: Option<&str>) -> Result<()> {
         update_files_version(config_path, &mut config, &new_version, &old_version)?;
 
         if version.is_some() {
-            execute_git_commands(&new_version)?;
+            let tag_name = format!("v{}", new_version);
+            let mut force = false;
+
+            // Pre-flight check: Detect existing tag locally or remotely
+            let local_exists = !Command::new("git").args(["tag", "-l", &tag_name]).output()?.stdout.is_empty();
+            let remote_exists = !Command::new("git").args(["ls-remote", "--tags", "origin", &tag_name]).output()?.stdout.is_empty();
+
+            if local_exists || remote_exists {
+                print!("\n⚠️  Release {} already exists. Overwrite? (y/N): ", tag_name);
+                io::stdout().flush()?;
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+                if response.trim().to_lowercase() != "y" {
+                    anyhow::bail!("Publication aborted: version {} already exists.", new_version);
+                }
+                force = true;
+                println!("🔥 Overwrite confirmed. Proceeding with force-update...");
+            }
+
+            execute_git_commands(&new_version, force)?;
             return Ok(());
         }
     }
@@ -109,17 +131,20 @@ fn update_files_version(config_path: &str, config: &mut ProjectConfig, new_versi
     Ok(())
 }
 
-fn execute_git_commands(version: &str) -> Result<()> {
+fn execute_git_commands(version: &str, force: bool) -> Result<()> {
     println!("📦 Automating Git release for v{}...", version);
     let tag = format!("v{}", version);
     let commit_msg = format!("Release {}", tag);
 
-    let cmds = [
+    let tag_args = if force { vec!["tag", "-f", &tag] } else { vec!["tag", &tag] };
+    let push_tag_args = if force { vec!["push", "origin", "-f", &tag] } else { vec!["push", "origin", &tag] };
+
+    let cmds: Vec<(Vec<&str>, &str)> = vec![
         (vec!["add", "."], "Staging changes"),
         (vec!["commit", "-m", &commit_msg], "Committing"),
         (vec!["push"], "Pushing to master"),
-        (vec!["tag", &tag], "Creating tag"),
-        (vec!["push", "origin", &tag], "Pushing tag"),
+        (tag_args, "Creating/Updating tag"),
+        (push_tag_args, "Pushing tag to origin"),
     ];
 
     for (args, desc) in cmds {
