@@ -15,7 +15,7 @@ use ratatui::{
     Terminal,
 };
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute as cross_execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -123,86 +123,92 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut attempt = 0;
     let mut progress = 0;
     let mut status_msg = String::from("Initializing poll...");
     let mut last_api_poll = Instant::now() - Duration::from_secs(5); // Trigger first poll immediately
 
-    let result = loop {
-        // 1. Handle user input (runs every iteration for responsiveness)
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if key.code == KeyCode::Char('q') {
-                        break Err(anyhow!("Publishing aborted by user."));
+    // Use an async block to ensure terminal cleanup happens even on error
+    let poll_result: Result<()> = async {
+        loop {
+            // 1. Handle user input (runs every iteration)
+            if event::poll(Duration::from_millis(50))? {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        // Detect 'q' OR 'Ctrl+C'
+                        let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                        if key.code == KeyCode::Char('q') || is_ctrl_c {
+                            return Err(anyhow!("Publishing aborted by user."));
+                        }
                     }
                 }
             }
-        }
 
-        // 2. Draw TUI
-        terminal.draw(|f| {
-            let size = f.size();
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(2)
-                .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
-                .split(size);
+            // 2. Draw TUI
+            terminal.draw(|f| {
+                let size = f.size();
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(2)
+                    .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+                    .split(size);
 
-            let gauge = Gauge::default()
-                .block(Block::default().title("CI Build Progress").borders(Borders::ALL))
-                .gauge_style(Style::default().fg(Color::Cyan))
-                .percent(progress);
-            f.render_widget(gauge, chunks[0]);
+                let gauge = Gauge::default()
+                    .block(Block::default().title("CI Build Progress").borders(Borders::ALL))
+                    .gauge_style(Style::default().fg(Color::Cyan))
+                    .percent(progress);
+                f.render_widget(gauge, chunks[0]);
 
-            let text = format!("Status: {}\n(Press 'q' to abort)", status_msg);
-            let paragraph = Paragraph::new(text)
-                .block(Block::default().title("Activity").borders(Borders::ALL));
-            f.render_widget(paragraph, chunks[1]);
-        })?;
-        
-        // 3. Poll GitHub API (Only runs every 5 seconds)
-        if last_api_poll.elapsed() >= Duration::from_secs(5) {
-            attempt += 1;
-            let runs = octo.workflows(owner, repo)
-                .list_all_runs()
-                .send()
-                .await
-                .context("Failed to fetch workflow runs from GitHub")?;
+                // Add a simple animated "polling" indicator so the UI doesn't look frozen
+                let dots = ".".repeat((Instant::now().elapsed().as_secs() % 4) as usize);
+                let text = format!("Status: {}{}\n(Press 'q' or Ctrl+C to abort)", status_msg, dots);
+                let paragraph = Paragraph::new(text)
+                    .block(Block::default().title("Activity").borders(Borders::ALL));
+                f.render_widget(paragraph, chunks[1]);
+            })?;
+            
+            // 3. Poll GitHub API
+            if last_api_poll.elapsed() >= Duration::from_secs(5) {
+                let runs = octo.workflows(owner, repo)
+                    .list_all_runs()
+                    .send()
+                    .await
+                    .context("Failed to fetch workflow runs from GitHub")?;
 
-            let target_run = runs.items.iter().find(|r| {
-                r.head_branch == tag || r.head_sha == tag
-            });
+                let target_run = runs.items.iter().find(|r| {
+                    r.head_branch == tag || r.head_sha == tag
+                });
 
-            match target_run {
-                Some(run) => {
-                    match run.status.as_str() {
-                        "completed" => {
-                            if run.conclusion.as_deref() == Some("success") {
-                                progress = 100;
-                                status_msg = "✅ CI Build Completed Successfully!".into();
-                                sleep(Duration::from_secs(1)).await;
-                                break Ok(());
-                            } else {
-                                break Err(anyhow!("CI failed: {:?}", run.conclusion));
+                match target_run {
+                    Some(run) => {
+                        match run.status.as_str() {
+                            "completed" => {
+                                if run.conclusion.as_deref() == Some("success") {
+                                    progress = 100;
+                                    status_msg = "✅ CI Build Completed Successfully!".into();
+                                    sleep(Duration::from_secs(1)).await;
+                                    return Ok(());
+                                } else {
+                                    return Err(anyhow!("CI failed: {:?}", run.conclusion));
+                                }
+                            }
+                            _ => {
+                                progress = 50;
+                                status_msg = format!("🔨 CI Status: {}", run.status);
                             }
                         }
-                        _ => {
-                            progress = 50;
-                            status_msg = format!("🔨 CI Status: {}", run.status);
-                        }
                     }
+                    None => status_msg = "⏳ Waiting for GitHub to register the tag...".into(),
                 }
-                None => status_msg = "⏳ Waiting for GitHub to register the tag...".into(),
+                last_api_poll = Instant::now();
             }
-            last_api_poll = Instant::now();
         }
-    };
+    }.await;
 
-    // Teardown TUI
-    disable_raw_mode()?;
-    cross_execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    result
+    // Teardown TUI: This code is now guaranteed to run
+    let _ = disable_raw_mode();
+    let _ = cross_execute!(io::stdout(), LeaveAlternateScreen);
+    
+    poll_result
 }
 
 async fn fetch_and_hash_assets(
