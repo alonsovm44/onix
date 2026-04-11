@@ -34,31 +34,29 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
     if let Some(new_version) = target_version {
         let old_version = config.app.version.clone();
         update_files_version(config_path, &mut config, &new_version, &old_version)?;
-
-        if version.is_some() {
-            let tag_name = format!("v{}", new_version);
-            let mut force = false;
-
-            // Pre-flight check: Detect existing tag locally or remotely
-            let local_exists = !Command::new("git").args(["tag", "-l", &tag_name]).output()?.stdout.is_empty();
-            let remote_exists = !Command::new("git").args(["ls-remote", "--tags", "origin", &tag_name]).output()?.stdout.is_empty();
-
-            if local_exists || remote_exists {
-                print!("\n⚠️  Release {} already exists. Overwrite? (y/N): ", tag_name);
-                io::stdout().flush()?;
-                let mut response = String::new();
-                io::stdin().read_line(&mut response)?;
-                if response.trim().to_lowercase() != "y" {
-                    anyhow::bail!("Publication aborted: version {} already exists.", new_version);
-                }
-                force = true;
-                println!("🔥 Overwrite confirmed. Proceeding with force-update...");
-            }
-
-            execute_git_commands(&new_version, force)?;
-            return Ok(());
-        }
     }
+
+    let final_version = config.app.version.clone();
+    let tag_name = format!("v{}", final_version);
+    let mut force = false;
+
+    // Pre-flight check: Detect existing tag locally or remotely
+    let local_exists = !Command::new("git").args(["tag", "-l", &tag_name]).output()?.stdout.is_empty();
+    let remote_exists = !Command::new("git").args(["ls-remote", "--tags", "origin", &tag_name]).output()?.stdout.is_empty();
+
+    if local_exists || remote_exists {
+        print!("\n⚠️  Release {} already exists. Overwrite? (y/N): ", tag_name);
+        io::stdout().flush()?;
+        let mut response = String::new();
+        io::stdin().read_line(&mut response)?;
+        if response.trim().to_lowercase() != "y" {
+            anyhow::bail!("Publication aborted: version {} already exists.", final_version);
+        }
+        force = true;
+        println!("🔥 Overwrite confirmed. Proceeding with force-update...");
+    }
+
+    execute_git_commands(&final_version, force)?;
 
     // Pre-flight check: Ensure we are in a git repo and have a remote
     let remote_url = get_git_remote().unwrap_or_else(|_| "unknown".to_string());
@@ -70,23 +68,7 @@ pub async fn execute(version_arg: Option<String>) -> Result<()> {
     println!("{:<15} | {:<10} | {:<20}", "OS", "Arch", "Runner (GHA)");
     println!("{:-<15}-|-{:-<10}-|-{:-<20}", "", "", "");
 
-    for target in &config.targets {
-        let runner = get_runner_for_target(target);
-        println!("{:<15} | {:<10} | {:<20}", target.os, target.arch, runner);
-    }
-
-    println!("\n✅ Matrix validated.");
-    println!("🔗 GitHub Action: .github/workflows/onix.yml is synced.");
-    println!("\nNext steps:");
-    println!("1. Commit your changes: `git add . && git commit -m 'Release {}'`", config.app.version);
-    println!("2. Tag the release: `git tag v{}`", config.app.version);
-    println!("3. Push to trigger CI: `git push origin v{}`", config.app.version);
-    
-    if let Some(slug) = repo_slug {
-        println!("\n🌍 Your public installation URL will be:");
-        println!("   https://raw.githubusercontent.com/{}/master/install.onix", slug);
-    }
-
+    // [The rest of your TUI/Polling logic should follow here]
     Ok(())
 }
 
@@ -136,16 +118,25 @@ fn execute_git_commands(version: &str, force: bool) -> Result<()> {
     let tag = format!("v{}", version);
     let commit_msg = format!("Release {}", tag);
 
+    // Check if there are changes to commit
+    let status = Command::new("git").args(["status", "--porcelain"]).output()?;
+    let is_dirty = !status.stdout.is_empty();
+
     let tag_args = if force { vec!["tag", "-f", &tag] } else { vec!["tag", &tag] };
     let push_tag_args = if force { vec!["push", "origin", "-f", &tag] } else { vec!["push", "origin", &tag] };
 
-    let cmds: Vec<(Vec<&str>, &str)> = vec![
-        (vec!["add", "."], "Staging changes"),
-        (vec!["commit", "-m", &commit_msg], "Committing"),
-        (vec!["push"], "Pushing to master"),
-        (tag_args, "Creating/Updating tag"),
-        (push_tag_args, "Pushing tag to origin"),
-    ];
+    let mut cmds: Vec<(Vec<&str>, &str)> = Vec::new();
+    
+    if is_dirty {
+        cmds.push((vec!["add", "."], "Staging changes"));
+        cmds.push((vec!["commit", "-m", &commit_msg], "Committing"));
+        cmds.push((vec!["push"], "Pushing to master"));
+    } else {
+        println!("  > Working tree clean, skipping commit.");
+    }
+
+    cmds.push((tag_args, "Creating/Updating tag"));
+    cmds.push((push_tag_args, "Pushing tag to origin"));
 
     for (args, desc) in cmds {
         println!("  > {}...", desc);
