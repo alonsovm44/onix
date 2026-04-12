@@ -1,123 +1,99 @@
 # Onix 💎
 
-[![Language](https://img.shields.io/badge/language-rust-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-red.svg)](#)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#)
+**Onix** is a developer-centric binary distribution and release automation tool. It streamlines the entire lifecycle of CLI applications—from initial CI/CD scaffolding to automated multi-platform releases and seamless client-side installations.
 
-Onix is not a package manager, not a registry, and it does not execute remote installation scripts (no `curl | sh`). No new ecosystem required.
+## The one liner
+> Opinionated binary distribution pipeline for GitHub-native CLI and standalone executable apps
 
-# One-liner
+## ✨ Features
 
-> Onix installs CLI tools through a verifiable, declarative protocol that lets you preview, approve, and control every system change before it happens.
+*   **Zero-Config Scaffolding**: `onix init` instantly sets up your project with a `.onix/config.yaml` and a production-ready GitHub Actions workflow.
+*   **TUI-Powered Publishing**: The `onix publish` command automates your Git workflow (stage, commit, tag, push) and provides a real-time Terminal UI to track CI build progress.
+*   **Automated Artifact Verification**: Automatically fetches release assets, verifies SHA-256 integrity, and generates an `install.onix` manifest for the consumer.
+*   **Smart Installation**: `onix install` handles binary deployment and maintains a `deprecated` archive of previous versions to ensure safe rollbacks and updates.
+*   **Multi-Platform by Default**: Built-in support for Linux (x86_64), macOS (ARM64/x86_64), and Windows (x86_64).
 
-## The Problem
+## 🚀 Getting Started
 
-Installing standalone CLI tools today usually forces a tradeoff between trust and convenience:
+### Installation
 
-1. **The Risk:**  
-   Running `curl | sh`-style installers that execute remote code with no structured review or guarantees.
-
-2. **The Friction:**  
-   Using OS-specific or language-specific package managers (Homebrew, APT, Winget, NPM, Cargo), which often introduce:
-   - ecosystem lock-in  
-   - dependency overhead  
-   - inconsistent installation behavior across platforms  
-
-In both cases, installation is either opaque or unnecessarily complex.
-
-## The Onix Solution
-
-Onix introduces a **declarative installation protocol for CLI binaries**.
-
-Instead of executing scripts or relying on package ecosystems, Onix:
-- resolves a published release artifact
-- verifies integrity (e.g. checksums)
-- shows a transparent installation plan
-- requires explicit user approval before making system changes
-
-This combines the simplicity of a single command with the safety of a structured, inspectable installation flow.
-
-## Design Principles
-
-- **No hidden execution:** Onix never runs remote code. No curl/irm hacks.
-- **Explicit changes:** Every system modification is shown before execution.
-- **Artifact-first:** Software is distributed as verifiable binaries, not scripts.
-- **User-controlled installs:** Nothing is installed without explicit approval.
-
-### Key Features
-- **🛡️ Trust-First:** Every installation requires explicit user consent via a TUI permission prompt.
-- **✅ Integrity:** Mandatory SHA256 checksum verification for every artifact.
-- **📦 Declarative:** Authors define a simple YAML manifest; Onix handles the system-level "plumbing."
-- **🌍 Cross-Platform:** One protocol for Linux, macOS, and Windows.
-- **🧹 Clean Uninstalls:** Since Onix tracks exactly what it touches, it can revert changes completely.
-
-## How it Works
-
-### 1. The Manifest (`install.onix`)
-Authors publish a simple YAML file alongside their releases. This file tells Onix exactly what to download and what permissions are needed.
-
-```yaml
-schema: "1.0.0"
-app: "my-awesome-tool"
-version: "1.2.3"
-install-on:
-  - os: "linux"
-    arch: "amd64"
-    url: "https://example.com/bin/linux-amd64.tar.gz"
-    sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-installation:
-  file-type: "binary"
-  target-dir: "~/.local/bin"
-  bin-name: "atool"
-
-permissions:
-  - "write:~/.local/bin"
-  - "env:PATH"
-```
-
-### 2. The Safe Install
-When a user runs `onix install user@repo`, Onix:
-1. Fetches and validates the manifest.
-2. Matches the architecture and OS.
-3. **Displays a TUI prompt** showing exactly which files will be written and which environment variables will change.
-4. Downloads, verifies the SHA256, and installs only after user confirmation.
-
-## Comparison
-
-| Feature | `curl | sh` | Package Managers | Onix |
-| :--- | :---: | :---: | :---: |
-| **Ease of Use** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ |
-| **Security** | ❌ | ✅ | ✅ |
-| **Transparency** | ❌ | ❌ | ✅ |
-| **Cross-Platform** | ⚠️ | ❌ | ✅ |
-| **No Bloat** | ✅ | ❌ | ✅ |
-
-## Installation
-
-*Coming Soon: Onix is currently in early alpha.*
+Currently, Onix is built using Rust. You can compile it from source:
 
 ```bash
-# Proposed bootstrap method
-onix self-install
+cargo build --release
 ```
 
-## FAQ
+### Initializing a Project
 
-**Why not just use Winget or Chocolatey?**
-Onix is cross-platform. A developer writes one `.onix` file and it works everywhere. It also provides a decentralized "bring-your-own-host" model.
+Run the following command in the root of your project:
 
-**Is this a replacement for Cargo or NPM?**
-No. Cargo and NPM manage libraries and build dependencies. Onix is for distributing the *final result*: the standalone binary.
+```bash
+onix init
+```
 
-**Does it require Admin/Sudo?**
-Only if you try to install to a system directory. Onix encourages "User-land" installs (like `~/.local/bin`) to keep your system clean.
+This will create:
+1.  `.onix/config.yaml`: Central configuration for your app metadata and build targets.
+2.  `.github/workflows/release.yml`: A pre-configured GitHub Action matrix build.
 
-## License
-This project is licensed under the MIT License.
+## 📦 Usage
+
+### Publishing a Release
+
+To release a new version, simply run:
+
+```bash
+onix publish [VERSION]
+```
+
+**What happens under the hood:**
+1.  Updates your version in `.onix/config.yaml`.
+2.  Stages all changes and creates a release commit.
+3.  Pushes a new Git tag (e.g., `v0.1.7`).
+4.  Opens a **Terminal UI** to poll GitHub Actions status, showing real-time progress of your build matrix.
+5.  Calculates checksums for all platform artifacts.
+6.  Generates and uploads an `install.onix` manifest to the GitHub Release.
+
+### Installing a Package
+
+Consumers can install your tool by pointing to the repository:
+
+```bash
+onix install <owner>/<repo>
+```
+
+Onix will detect existing versions, move them to the `deprecated` folder with a timestamp, and deploy the fresh binary to your toolset root.
+
+## ⚙️ Configuration (`config.yaml`)
+
+The `.onix/config.yaml` file defines how your application is built and distributed:
+
+```yaml
+app:
+  name: my-app
+  version: 0.1.0
+build:
+  entry: src/main.rs
+  command: cargo build --release
+  output_name: my-app
+targets:
+  - { os: linux, arch: x86_64 }
+  - { os: macos, arch: arm64 }
+  - { os: windows, arch: x86_64 }
+install:
+  file_type: binary
+  bin_name: my-app
+```
+
+## 🔐 Security
+
+Onix handles GitHub authentication via a `GITHUB_TOKEN`.
+*   It looks for a `GITHUB_TOKEN` environment variable.
+*   Alternatively, it stores a local token in `.onix/token.key` (automatically added to your `.gitignore`).
+
+## 🛠️ Requirements
+
+*   **Git**: Must be installed and configured in your shell.
+*   **GitHub Repository**: The `origin` remote must point to a GitHub URL.
 
 ---
-*Onix: Install with confidence, not just hope.*
-
-can we add "onix publish --v x.x.x " so it automatically stages, commits, pushes, makes the tag with the x.x.x version, and pushes the tag"?  
+*Built with Rust and ❤️ for the developer community.*

@@ -256,9 +256,16 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                         
                         let total_jobs = jobs.items.len();
                         let completed_jobs = jobs.items.iter().filter(|j| j.status == Status::Completed).count();
-                        let failed_jobs: Vec<String> = jobs.items.iter()
-                            .filter(|j| j.conclusion == Some(Conclusion::Failure))
-                            .map(|j| j.name.clone())
+                        
+                        let unsuccessful_jobs: Vec<String> = jobs.items.iter()
+                            .filter(|j| {
+                                j.status == Status::Completed && 
+                                !matches!(j.conclusion, Some(Conclusion::Success) | Some(Conclusion::Skipped))
+                            })
+                            .map(|j| {
+                                let conclusion = j.conclusion.as_ref().map(|c| format!("{:?}", c)).unwrap_or_else(|| "Unknown".to_string());
+                                format!("{} ({})", j.name, conclusion)
+                            })
                             .collect();
 
                         if total_jobs > 0 {
@@ -274,8 +281,8 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                     return Ok(());
                                 } else {
                                     let reason = run.conclusion.as_deref().unwrap_or("unknown");
-                                    let details = if !failed_jobs.is_empty() {
-                                        format!("Failed jobs: {}", failed_jobs.join(", "))
+                                    let details = if !unsuccessful_jobs.is_empty() {
+                                        format!("Problems detected in: {}", unsuccessful_jobs.join(", "))
                                     } else {
                                         format!("Conclusion: {}", reason)
                                     };
