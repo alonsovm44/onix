@@ -15,7 +15,8 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
     Terminal,
 };
-use octocrab::models::workflows::{Status, Conclusion};
+use chrono::{Utc, DateTime};
+use octocrab::models::workflows::Status;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute as cross_execute,
@@ -86,7 +87,7 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
         // Check if the tag already exists on GitHub
         if !dry_run {
             match octo.repos(&owner, &repo_name).releases().get_by_tag(&tag_name).await {
-                Ok(_) => {
+                Ok(release) => {
                     println!("⚠️  Warning: Release for tag {} already exists on GitHub.", tag_name);
                     print!("Do you want to overwrite it? [y/N]: ");
                     io::stdout().flush()?;
@@ -95,7 +96,9 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
                     if !input.trim().eq_ignore_ascii_case("y") {
                         return Err(anyhow!("Publishing aborted by user."));
                     }
-                    println!("🔥 Proceeding with overwrite...");
+                    println!("🔥 Deleting existing release and proceeding with overwrite...");
+                    octo.repos(&owner, &repo_name).releases().delete(*release.id).await
+                        .context("Failed to delete existing release")?;
                 }
                 Err(_) => {} // Tag doesn't exist or API error, proceed normally
             }
@@ -196,6 +199,7 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let poll_start_time = Utc::now();
     let start_time = Instant::now();
     let mut progress: u16 = 0;
     let mut status_msg = String::from("Initializing poll...");
@@ -238,7 +242,11 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                             }
 
                             let target_run = runs.items.iter().find(|r| {
-                            r.head_branch == tag_task || r.head_sha.contains(&tag_task) || r.head_sha == tag_task
+                                let matches_tag = r.head_branch == tag_task || r.head_sha.contains(&tag_task) || r.head_sha == tag_task;
+                                // Only consider runs started around or after we began polling to avoid 
+                                // picking up old cancelled/failed runs from previous attempts.
+                                let is_new = r.created_at > (poll_start_time - chrono::Duration::minutes(2));
+                                matches_tag && is_new
                             });
 
                             match target_run {
@@ -372,8 +380,11 @@ async fn fetch_and_hash_assets(
 
     for target in &config.targets {
         let asset_name = format!("{}-{}-{}", config.build.output_name, target.os, target.arch);
+        // Fallback check for macOS (often named 'darwin')
+        let is_macos = target.os == "macos";
+        
         let asset = release.assets.iter()
-            .find(|a| a.name == asset_name || a.name == format!("{}.exe", asset_name))
+            .find(|a| a.name == asset_name || a.name == format!("{}.exe", asset_name) || (is_macos && a.name == asset_name.replace("macos", "darwin")))
             .ok_or_else(|| anyhow!("Asset {} not found in release", asset_name))?;
 
         let file_path = temp_dir.join(&asset.name);
