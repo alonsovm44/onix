@@ -72,6 +72,35 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
         let repo = Repository::open(".")
             .context("Failed to open git repository. 'onix publish' must be run inside a git repo.")?;
 
+        // Extract GitHub Info and initialize client early to check for existing releases
+        let (owner, repo_name) = get_repo_remote_info(&repo)?;
+        report.repo_info = Some((owner.clone(), repo_name.clone()));
+        println!("📦 Repository identified: {}/{}", owner, repo_name);
+
+        let token = get_github_token()?;
+        let octo = octocrab::Octocrab::builder()
+            .personal_token(token)
+            .build()
+            .context("Failed to initialize GitHub client")?;
+
+        // Check if the tag already exists on GitHub
+        if !dry_run {
+            match octo.repos(&owner, &repo_name).releases().get_by_tag(&tag_name).await {
+                Ok(_) => {
+                    println!("⚠️  Warning: Release for tag {} already exists on GitHub.", tag_name);
+                    print!("Do you want to overwrite it? [y/N]: ");
+                    io::stdout().flush()?;
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input)?;
+                    if !input.trim().eq_ignore_ascii_case("y") {
+                        return Err(anyhow!("Publishing aborted by user."));
+                    }
+                    println!("🔥 Proceeding with overwrite...");
+                }
+                Err(_) => {} // Tag doesn't exist or API error, proceed normally
+            }
+        }
+
         // 3. Automated Git Workflow: Stage, Commit, Pull, Push, Tag, and Push Tag
         println!("📦 Staging and committing changes..."); 
         run_git(&["add", "."], dry_run, &mut report.git_ops)?;
@@ -88,17 +117,6 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
         println!("🏷️ Creating and pushing tag {}...", tag_name);
         run_git(&["tag", "-f", &tag_name], dry_run, &mut report.git_ops)?;
         run_git(&["push", "origin", &tag_name, "-f"], dry_run, &mut report.git_ops)?;
-
-        // 5. Extract GitHub Info
-        let (owner, repo_name) = get_repo_remote_info(&repo)?;
-        report.repo_info = Some((owner.clone(), repo_name.clone()));
-        println!("📦 Repository identified: {}/{}", owner, repo_name);
-
-        let token = get_github_token()?;
-        let octo = octocrab::Octocrab::builder()
-            .personal_token(token)
-            .build()
-            .context("Failed to initialize GitHub client")?;
 
         // 6. Poll GitHub Actions
         poll_ci_status(&octo, &owner, &repo_name, &tag_name).await?;

@@ -1,0 +1,101 @@
+{
+  "config": {
+    "app": {
+      "name": "onix",
+      "version": "0.1.9"
+    },
+    "build": {
+      "entry": "src/main.rs",
+      "command": "cargo build --release",
+      "output_name": "onix"
+    },
+    "targets": [
+      {
+        "os": "linux",
+        "arch": "x86_64"
+      },
+      {
+        "os": "macos",
+        "arch": "x86_64"
+      },
+      {
+        "os": "macos",
+        "arch": "arm64"
+      },
+      {
+        "os": "windows",
+        "arch": "x86_64"
+      }
+    ],
+    "install": {
+      "file_type": "binary",
+      "target_dir": "C:\\onix",
+      "bin_name": "onix"
+    },
+    "permissions": [
+      {
+        "type": "filesystem",
+        "action": "write",
+        "path": "C:\\onix",
+        "variable": null
+      },
+      {
+        "type": "environment",
+        "action": "modify",
+        "path": null,
+        "variable": "PATH"
+      }
+    ]
+  },
+  "git_ops": [
+    {
+      "args": [
+        "add",
+        "."
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "commit",
+        "-m",
+        "release: v0.1.9"
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "pull",
+        "--rebase"
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "push"
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "tag",
+        "-f",
+        "v0.1.9"
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "push",
+        "origin",
+        "v0.1.9",
+        "-f"
+      ],
+      "success": true
+    }
+  ],
+  "repo_info": [
+    "alonsovm44",
+    "onix"
+  ]
+}
