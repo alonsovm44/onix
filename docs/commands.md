@@ -268,3 +268,34 @@ message: Run `mycli --help` to get started
 👉 CI later fills in hashes automatically.
 
 👉 User does NOT write YAML manually.
+
+# Onix run
+
+`onix run author@repo`
+
+What onix run actually is
+
+- More accurate model:
+  - fetch binary
+  - verify checksum
+  - extract to temp/cache
+  - execute immediately
+(optionally delete or keep cached)
+
+## ⚖️ Key distinction
+
+1. onix install
+writes to system/user PATH
+persists version
+supports upgrades/rollbacks
+becomes part of your environment
+
+- 👉 “I own this tool now”
+
+2. onix run
+no permanent install required
+no PATH modification required
+may use temporary directory or cache
+execution-first workflow
+
+👉 “let me try this tool right now”

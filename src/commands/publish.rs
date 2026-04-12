@@ -178,28 +178,137 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let start_time = Instant::now();
     let mut progress: u16 = 0;
     let mut status_msg = String::from("Initializing poll...");
     let mut debug_info = String::from("No runs found yet.");
-    let mut last_api_poll = Instant::now() - Duration::from_secs(6); // Trigger first poll immediately
+
+    // Message types for background polling
+    enum CiUpdate {
+        Update { progress: u16, status: String, debug: String },
+        Done,
+        Error(String),
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let octo = octo.clone();
+    let owner = owner.to_string();
+    let repo = repo.to_string();
+    let tag_ui = tag.to_string();
+    let tag_task = tag_ui.clone();
 
     // Use an async block to ensure terminal cleanup happens even on error
     let poll_result: Result<()> = async {
+        // Spawn background worker to handle GitHub API polling
+        tokio::spawn(async move {
+            let mut last_api_poll = Instant::now() - Duration::from_secs(6);
+            loop {
+                if last_api_poll.elapsed() >= Duration::from_secs(5) {
+                    let runs_result = octo.workflows(&owner, &repo)
+                        .list_all_runs()
+                        .send()
+                        .await;
+
+                    match runs_result {
+                        Ok(runs) => {
+                            let mut current_debug = String::from("No runs found yet.");
+                            if let Some(first) = runs.items.first() {
+                                current_debug = format!(
+                                    "ID: {}\nBranch: {:?}\nSHA: {}\nStatus: {}", 
+                                    first.id, first.head_branch, first.head_sha, first.status
+                                );
+                            }
+
+                            let target_run = runs.items.iter().find(|r| {
+                            r.head_branch == tag_task || r.head_sha.contains(&tag_task) || r.head_sha == tag_task
+                            });
+
+                            match target_run {
+                                Some(run) => {
+                                    let jobs = match octo.workflows(&owner, &repo).list_jobs(run.id).send().await {
+                                        Ok(j) => j,
+                                        Err(e) => {
+                                            let _ = tx.send(CiUpdate::Error(format!("Job fetch failed: {}", e))).await;
+                                            return;
+                                        }
+                                    };
+                                    
+                                    let total_jobs = jobs.items.len();
+                                    let completed_jobs = jobs.items.iter().filter(|j| j.status == Status::Completed).count();
+                                    let progress = if total_jobs > 0 {
+                                        ((completed_jobs as f32 / total_jobs as f32) * 100.0) as u16
+                                    } else { 0 };
+
+                                    match run.status.as_str() {
+                                        "completed" => {
+                                            if run.conclusion.as_deref() == Some("success") {
+                                                let _ = tx.send(CiUpdate::Done).await;
+                                                return;
+                                            } else {
+                                                let _ = tx.send(CiUpdate::Error(format!("CI Finished with errors ({})", run.conclusion.as_deref().unwrap_or("unknown")))).await;
+                                                return;
+                                            }
+                                        }
+                                        _ => {
+                                            let _ = tx.send(CiUpdate::Update {
+                                                progress,
+                                                status: format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs),
+                                                debug: current_debug,
+                                            }).await;
+                                        }
+                                    }
+                                }
+                                None => {
+                                    let _ = tx.send(CiUpdate::Update {
+                                        progress: 0,
+                                        status: "⏳ Waiting for GitHub to register the tag...".into(),
+                                        debug: current_debug,
+                                    }).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(CiUpdate::Error(format!("Poll failed: {}", e))).await;
+                            return;
+                        }
+                    }
+                    last_api_poll = Instant::now();
+                }
+                sleep(Duration::from_millis(500)).await;
+            }
+        });
+
         loop {
             // 1. Handle user input (runs every iteration)
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        // Detect 'q' OR 'Ctrl+C'
-                        let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-                        if key.code == KeyCode::Char('q') || is_ctrl_c {
-                            return Err(anyhow!("Publishing aborted by user."));
-                        }
+                    // Detect 'q' OR 'Ctrl+C' - handle both Press and Unknown for robustness
+                    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                    if key.code == KeyCode::Char('q') || is_ctrl_c {
+                        return Err(anyhow!("Publishing aborted by user."));
                     }
                 }
             }
 
-            // 2. Draw TUI
+            // 2. Consume updates from background worker
+            while let Ok(update) = rx.try_recv() {
+                match update {
+                    CiUpdate::Done => {
+                        progress = 100;
+                        status_msg = "✅ CI Build Completed Successfully!".into();
+                        sleep(Duration::from_secs(1)).await;
+                        return Ok(());
+                    }
+                    CiUpdate::Error(e) => return Err(anyhow!(e)),
+                    CiUpdate::Update { progress: p, status: s, debug: d } => {
+                        progress = p;
+                        status_msg = s;
+                        debug_info = d;
+                    }
+                }
+            }
+
+            // 3. Draw TUI
             terminal.draw(|f| {
                 let size = f.size();
                 let chunks = Layout::default()
@@ -215,89 +324,15 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                 f.render_widget(gauge, chunks[0]);
 
                 // Add a simple animated "polling" indicator so the UI doesn't look frozen
-                let dots = ".".repeat((Instant::now().elapsed().as_secs() % 4) as usize);
+                let dots = ".".repeat((start_time.elapsed().as_secs() % 4) as usize);
                 let text = format!("Status: {}{}\nTarget: {}\n\nDebug (Last run seen):\n{}\n\n(Press 'q' or Ctrl+C to abort)", 
-                    status_msg, dots, tag, debug_info);
+                    status_msg, dots, tag_ui, debug_info);
                 let paragraph = Paragraph::new(text)
                     .block(Block::default().title("Activity").borders(Borders::ALL));
                 f.render_widget(paragraph, chunks[1]);
             })?;
             
-            // 3. Poll GitHub API
-            if last_api_poll.elapsed() >= Duration::from_secs(5) {
-                let runs = octo.workflows(owner, repo)
-                    .list_all_runs()
-                    .send()
-                    .await
-                    .context("Failed to fetch workflow runs from GitHub")?;
-
-                // Update debug info with the latest run found on GitHub
-                if let Some(first) = runs.items.first() {
-                    let branch_name = &first.head_branch;
-                    debug_info = format!(
-                        "ID: {}\nBranch: {:?}\nSHA: {}\nStatus: {}", 
-                        first.id, branch_name, first.head_sha, first.status
-                    );
-                } else {
-                    debug_info = "GitHub returned 0 workflow runs.".to_string();
-                }
-
-                let target_run = runs.items.iter().find(|r| {
-                    r.head_branch == tag || r.head_sha.contains(tag) || r.head_sha == tag
-                });
-
-                match target_run {
-                    Some(run) => {
-                        // Fetch individual jobs to calculate real progress and identify failures
-                        let jobs = octo.workflows(owner, repo)
-                            .list_jobs(run.id)
-                            .send()
-                            .await?;
-                        
-                        let total_jobs = jobs.items.len();
-                        let completed_jobs = jobs.items.iter().filter(|j| j.status == Status::Completed).count();
-                        
-                        let unsuccessful_jobs: Vec<String> = jobs.items.iter()
-                            .filter(|j| {
-                                j.status == Status::Completed && 
-                                !matches!(j.conclusion, Some(Conclusion::Success) | Some(Conclusion::Skipped))
-                            })
-                            .map(|j| {
-                                let conclusion = j.conclusion.as_ref().map(|c| format!("{:?}", c)).unwrap_or_else(|| "Unknown".to_string());
-                                format!("{} ({})", j.name, conclusion)
-                            })
-                            .collect();
-
-                        if total_jobs > 0 {
-                            progress = ((completed_jobs as f32 / total_jobs as f32) * 100.0) as u16;
-                        }
-
-                        match run.status.as_str() {
-                            "completed" => {
-                                if run.conclusion.as_deref() == Some("success") {
-                                    progress = 100;
-                                    status_msg = "✅ CI Build Completed Successfully!".into();
-                                    sleep(Duration::from_secs(1)).await;
-                                    return Ok(());
-                                } else {
-                                    let reason = run.conclusion.as_deref().unwrap_or("unknown");
-                                    let details = if !unsuccessful_jobs.is_empty() {
-                                        format!("Problems detected in: {}", unsuccessful_jobs.join(", "))
-                                    } else {
-                                        format!("Conclusion: {}", reason)
-                                    };
-                                    return Err(anyhow!("CI Finished with errors ({}). {}", reason, details));
-                                }
-                            }
-                            _ => {
-                                status_msg = format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs);
-                            }
-                        }
-                    }
-                    None => status_msg = "⏳ Waiting for GitHub to register the tag...".into(),
-                }
-                last_api_poll = Instant::now();
-            }
+            sleep(Duration::from_millis(50)).await;
         }
     }.await;
 
