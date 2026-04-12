@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
     Terminal,
 };
+use octocrab::models::workflows::{Status, Conclusion};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute as cross_execute,
@@ -177,7 +178,7 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut progress = 0;
+    let mut progress: u16 = 0;
     let mut status_msg = String::from("Initializing poll...");
     let mut debug_info = String::from("No runs found yet.");
     let mut last_api_poll = Instant::now() - Duration::from_secs(6); // Trigger first poll immediately
@@ -247,6 +248,23 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
 
                 match target_run {
                     Some(run) => {
+                        // Fetch individual jobs to calculate real progress and identify failures
+                        let jobs = octo.workflows(owner, repo)
+                            .list_jobs(run.id)
+                            .send()
+                            .await?;
+                        
+                        let total_jobs = jobs.items.len();
+                        let completed_jobs = jobs.items.iter().filter(|j| j.status == Status::Completed).count();
+                        let failed_jobs: Vec<String> = jobs.items.iter()
+                            .filter(|j| j.conclusion == Some(Conclusion::Failure))
+                            .map(|j| j.name.clone())
+                            .collect();
+
+                        if total_jobs > 0 {
+                            progress = ((completed_jobs as f32 / total_jobs as f32) * 100.0) as u16;
+                        }
+
                         match run.status.as_str() {
                             "completed" => {
                                 if run.conclusion.as_deref() == Some("success") {
@@ -255,12 +273,17 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                     sleep(Duration::from_secs(1)).await;
                                     return Ok(());
                                 } else {
-                                    return Err(anyhow!("CI failed: {:?}", run.conclusion));
+                                    let reason = run.conclusion.as_deref().unwrap_or("unknown");
+                                    let details = if !failed_jobs.is_empty() {
+                                        format!("Failed jobs: {}", failed_jobs.join(", "))
+                                    } else {
+                                        format!("Conclusion: {}", reason)
+                                    };
+                                    return Err(anyhow!("CI Finished with errors ({}). {}", reason, details));
                                 }
                             }
                             _ => {
-                                progress = 50;
-                                status_msg = format!("🔨 CI Status: {}", run.status);
+                                status_msg = format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs);
                             }
                         }
                     }
@@ -424,4 +447,4 @@ fn save_token(token: &str) -> Result<()> {
 
     println!("💾 Token saved locally to {}", token_file.display());
     Ok(())
-}
+} 
