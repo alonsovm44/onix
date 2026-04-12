@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow};
 use git2::Repository;
 use regex::Regex;
+use serde::Serialize;
 use tokio::time::sleep;
 use ratatui::{
     backend::CrosstermBackend,
@@ -21,7 +22,22 @@ use crossterm::{
 };
 use crate::manifest_generator::{AppConfig};
 
-pub async fn execute(version_arg: Option<String>, _debug: bool, dry_run: bool) -> Result<()> {
+#[derive(Serialize, Default)]
+struct DebugReport {
+    config: Option<AppConfig>,
+    git_ops: Vec<GitOpLog>,
+    repo_info: Option<(String, String)>,
+}
+
+#[derive(Serialize)]
+struct GitOpLog {
+    args: Vec<String>,
+    success: bool,
+}
+
+pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) -> Result<()> {
+    let mut report = DebugReport::default();
+
     // 1. Load configuration to get the current version
     let config_path = Path::new(".onix/config.yaml");
     if !config_path.exists() {
@@ -42,67 +58,92 @@ pub async fn execute(version_arg: Option<String>, _debug: bool, dry_run: bool) -
             .context("Failed to save updated version to .onix/config.yaml")?;
     }
 
+    if debug {
+        report.config = Some(config.clone());
+    }
+
     let tag_name = format!("v{}", config.app.version);
     println!("🚀 Preparing to publish {} version {}...", config.app.name, tag_name);
 
-    // 2. Open the Git repository
-    let repo = Repository::open(".")
-        .context("Failed to open git repository. 'onix publish' must be run inside a git repo.")?;
+    // Wrapper to capture errors so we can still print the debug report
+    let result: Result<()> = async {
+        // 2. Open the Git repository
+        let repo = Repository::open(".")
+            .context("Failed to open git repository. 'onix publish' must be run inside a git repo.")?;
 
-    // 3. Automated Git Workflow: Stage, Commit, Push, Tag, and Push Tag
-    println!("📦 Staging and committing changes..."); 
-    run_git(&["add", "."], dry_run)?;
-    // Ignore commit error if there's nothing new to commit
-    let _ = run_git(&["commit", "-m", &format!("release: {}", tag_name)], dry_run);
-    run_git(&["push"], dry_run)?;
-
-    println!("🏷️ Creating and pushing tag {}...", tag_name);
-    run_git(&["tag", "-f", &tag_name], dry_run)?;
-    run_git(&["push", "origin", &tag_name, "-f"], dry_run)?;
-
-    // 5. Extract GitHub Info
-    let (owner, repo_name) = get_repo_remote_info(&repo)?;
-    println!("📦 Repository identified: {}/{}", owner, repo_name);
-
-    let token = get_github_token()?;
-    let octo = octocrab::Octocrab::builder()
-        .personal_token(token)
-        .build()
-        .context("Failed to initialize GitHub client")?;
-
-    // 6. Poll GitHub Actions
-    poll_ci_status(&octo, &owner, &repo_name, &tag_name).await?;
-
-    // 7. Fetch release and compute hashes
-    println!("🔍 Fetching release artifacts for verification...");
-    let release = octo.repos(&owner, &repo_name)
-        .releases()
-        .get_by_tag(&tag_name)
-        .await
-        .context("Could not find release for the pushed tag")?;
-
-    let checksums = fetch_and_hash_assets(&config, &release).await?;
-
-    // 8. Generate and upload install.onix
-    println!("📝 Generating automated install manifest...");
-    let manifest_content = crate::manifest_generator::generate_install_manifest(
-        &config, &owner, &repo_name, &tag_name, &checksums
-    ).map_err(|e| anyhow!(e.to_string()))?;
-
-    if !dry_run {
-        println!("📤 Uploading install.onix to GitHub Release...");
-        octo.repos(&owner, &repo_name)
-            .releases()
-            .upload_asset(*release.id, "install.onix", manifest_content.into())
-            .send()
-            .await
-            .context("Failed to upload manifest to release")?;
-    } else {
-        println!("✨ [DRY RUN] Skipping manifest upload to GitHub Release.");
-    }
+        // 3. Automated Git Workflow: Stage, Commit, Pull, Push, Tag, and Push Tag
+        println!("📦 Staging and committing changes..."); 
+        run_git(&["add", "."], dry_run, &mut report.git_ops)?;
         
-    println!("🚀 Version {} successfully published!", config.app.version);
-    Ok(())
+        // Ignore commit error if there's nothing new to commit
+        let _ = run_git(&["commit", "-m", &format!("release: {}", tag_name)], dry_run, &mut report.git_ops);
+        
+        println!("🔄 Synchronizing with remote...");
+        run_git(&["pull", "--rebase"], dry_run, &mut report.git_ops)?;
+
+        println!("📤 Pushing changes to remote...");
+        run_git(&["push"], dry_run, &mut report.git_ops)?;
+
+        println!("🏷️ Creating and pushing tag {}...", tag_name);
+        run_git(&["tag", "-f", &tag_name], dry_run, &mut report.git_ops)?;
+        run_git(&["push", "origin", &tag_name, "-f"], dry_run, &mut report.git_ops)?;
+
+        // 5. Extract GitHub Info
+        let (owner, repo_name) = get_repo_remote_info(&repo)?;
+        report.repo_info = Some((owner.clone(), repo_name.clone()));
+        println!("📦 Repository identified: {}/{}", owner, repo_name);
+
+        let token = get_github_token()?;
+        let octo = octocrab::Octocrab::builder()
+            .personal_token(token)
+            .build()
+            .context("Failed to initialize GitHub client")?;
+
+        // 6. Poll GitHub Actions
+        poll_ci_status(&octo, &owner, &repo_name, &tag_name).await?;
+
+        // 7. Fetch release and compute hashes
+        println!("🔍 Fetching release artifacts for verification...");
+        let release = octo.repos(&owner, &repo_name)
+            .releases()
+            .get_by_tag(&tag_name)
+            .await
+            .context("Could not find release for the pushed tag")?;
+
+        let checksums = fetch_and_hash_assets(&config, &release).await?;
+
+        // 8. Generate and upload install.onix
+        println!("📝 Generating automated install manifest...");
+        let manifest_content = crate::manifest_generator::generate_install_manifest(
+            &config, &owner, &repo_name, &tag_name, &checksums
+        ).map_err(|e| anyhow!(e.to_string()))?;
+
+        if !dry_run {
+            println!("📤 Uploading install.onix to GitHub Release...");
+            octo.repos(&owner, &repo_name)
+                .releases()
+                .upload_asset(*release.id, "install.onix", manifest_content.into())
+                .send()
+                .await
+                .context("Failed to upload manifest to release")?;
+        } else {
+            println!("✨ [DRY RUN] Skipping manifest upload to GitHub Release.");
+        }
+            
+        println!("🚀 Version {} successfully published!", config.app.version);
+        Ok(())
+    }.await;
+
+    if debug {
+        let json_report = serde_json::to_string_pretty(&report)?;
+        println!("\n🛠️  DEBUG REPORT (JSON):\n{}", json_report);
+
+        let report_file = "onix-debug-report.json";
+        fs::write(report_file, &json_report).context("Failed to write debug report to file")?;
+        println!("\n💾 Debug report saved to: {}", report_file);
+    }
+
+    result
 }
 
 /// Extracts GitHub owner and repo name from the 'origin' remote URL.
@@ -267,18 +308,24 @@ async fn fetch_and_hash_assets(
 }
 
 /// Helper to run git commands and handle errors.
-fn run_git(args: &[&str], dry_run: bool) -> Result<()> {
-    if dry_run {
+fn run_git(args: &[&str], dry_run: bool, log: &mut Vec<GitOpLog>) -> Result<()> {
+    let success = if dry_run {
         println!("  [DRY RUN] git {}", args.join(" "));
-        return Ok(());
-    }
+        true
+    } else {
+        Command::new("git")
+            .args(args)
+            .status()
+            .context(format!("Failed to execute 'git {}'", args.join(" ")))?
+            .success()
+    };
 
-    let status = Command::new("git")
-        .args(args)
-        .status()
-        .context(format!("Failed to execute 'git {}'", args.join(" ")))?;
+    log.push(GitOpLog {
+        args: args.iter().map(|s| s.to_string()).collect(),
+        success,
+    });
 
-    if !status.success() {
+    if !success {
         return Err(anyhow!("Git command failed: git {}", args.join(" ")));
     }
     Ok(())

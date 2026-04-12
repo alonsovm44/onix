@@ -1,4 +1,5 @@
 /target
 Cargo.lock
 .onix/token.key
-.gendox/.gendox_congig.json
+.gendox/gendox_congig.json
+docs/notes.txt
