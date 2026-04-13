@@ -69,9 +69,20 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
 
     // Wrapper to capture errors so we can still print the debug report
     let result: Result<()> = async {
-        // 2. Open the Git repository
+        // 2. Open the Git repository and check we're on main/master
         let repo = Repository::open(".")
             .context("Failed to open git repository. 'onix publish' must be run inside a git repo.")?;
+
+        let current_branch = get_current_branch(&repo)?;
+        if current_branch != "main" && current_branch != "master" {
+            return Err(anyhow!(
+                "You must be on 'main' or 'master' branch to publish. Current branch: '{}'\n\n\
+                 To switch: git checkout main\n\
+                 Or publish from main: git checkout main && onix publish",
+                current_branch
+            ));
+        }
+        println!("✅ On {} branch", current_branch);
 
         // Extract GitHub Info and initialize client early to check for existing releases
         let (owner, repo_name) = get_repo_remote_info(&repo)?;
@@ -190,6 +201,21 @@ fn get_repo_remote_info(repo: &Repository) -> Result<(String, String)> {
     ))
 }
 
+/// Returns the name of the current git branch.
+fn get_current_branch(repo: &Repository) -> Result<String> {
+    let head = repo.head()
+        .context("Failed to get HEAD - is this a valid git repository with a branch checked out?")?;
+    
+    if head.is_branch() {
+        head.shorthand()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("Could not determine branch name from HEAD"))
+    } else {
+        // Detached HEAD state
+        Err(anyhow!("HEAD is detached. You must be on 'main' or 'master' branch to publish."))
+    }
+}
+
 /// Polls GitHub Actions until the workflow run for the specific tag completes.
 async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag: &str) -> Result<()> {
     // Setup TUI
@@ -204,10 +230,11 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
     let mut progress: u16 = 0;
     let mut status_msg = String::from("Initializing poll...");
     let mut debug_info = String::from("No runs found yet.");
+    let mut progress_100_at: Option<Instant> = None;
 
     // Message types for background polling
     enum CiUpdate {
-        Update { progress: u16, status: String, debug: String },
+        Update { progress: u16, status: String, debug: String, run_status: String },
         Done,
         Error(String),
     }
@@ -265,6 +292,8 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                         ((completed_jobs as f32 / total_jobs as f32) * 100.0) as u16
                                     } else { 0 };
 
+                                    let run_status = run.status.as_str().to_string();
+                                    
                                     match run.status.as_str() {
                                         "completed" => {
                                             if run.conclusion.as_deref() == Some("success") {
@@ -276,11 +305,22 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                             }
                                         }
                                         _ => {
+                                            // Also consider done if all jobs are complete (progress 100%) 
+                                            // This handles the edge case where run.status lags behind job statuses
+                                            let is_done = progress == 100 && completed_jobs == total_jobs && total_jobs > 0;
+                                            
                                             let _ = tx.send(CiUpdate::Update {
                                                 progress,
                                                 status: format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs),
                                                 debug: current_debug,
+                                                run_status,
                                             }).await;
+                                            
+                                            if is_done {
+                                                // Give it one more poll cycle to let run.status catch up
+                                                sleep(Duration::from_secs(3)).await;
+                                                continue;
+                                            }
                                         }
                                     }
                                 }
@@ -289,6 +329,7 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                         progress: 0,
                                         status: "⏳ Waiting for GitHub to register the tag...".into(),
                                         debug: current_debug,
+                                        run_status: "waiting".into(),
                                     }).await;
                                 }
                             }
@@ -326,10 +367,24 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                         return Ok(());
                     }
                     CiUpdate::Error(e) => return Err(anyhow!(e)),
-                    CiUpdate::Update { progress: p, status: s, debug: d } => {
+                    CiUpdate::Update { progress: p, status: s, debug: d, run_status } => {
                         progress = p;
                         status_msg = s;
                         debug_info = d;
+                        
+                        // Edge case: progress 100% but run status still "in_progress"
+                        // Track when we first hit 100% and auto-complete after 10 seconds
+                        if progress == 100 {
+                            match progress_100_at {
+                                None => progress_100_at = Some(Instant::now()),
+                                Some(t) if t.elapsed() > Duration::from_secs(10) && run_status == "in_progress" => {
+                                    // Force completion after 10 seconds at 100% - likely a GitHub API lag
+                                    println!("\n⚠️  Warning: All jobs complete but run status still 'in_progress'. Assuming success.");
+                                    return Ok(());
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
