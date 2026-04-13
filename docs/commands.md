@@ -2,7 +2,7 @@
 # commands to be implemented for MVP v1.0.0
 
 ```bash
-onix install <url>
+onix install user@repo-vX.Y.Z
 # Fetches manifest
 # Shows plan (TUI)
 # Asks for confirmation
@@ -17,7 +17,7 @@ onix inspect <url> # this is the dry run command
 # Show install plan
 # does NOT install anything
 
-onix install <url> --yes
+onix install user@repo-vX.Y.Z --yes
 #skips confirmation prompt
 # required for CI/CD, automation
 
@@ -30,7 +30,7 @@ onix --help
 onix --version | -v 
 # shows version installed
 
-onix install <url> --versbose
+onix install user@repo-vX.Y.Z --versbose
 #verbose install mode
 ```
 # Publish
@@ -271,7 +271,7 @@ message: Run `mycli --help` to get started
 
 # Onix run
 
-`onix run author@repo`
+`onix run author@repo-vX.Y.Z`
 
 What onix run actually is
 
@@ -285,17 +285,17 @@ What onix run actually is
 ## ⚖️ Key distinction
 
 1. onix install
-writes to system/user PATH
-persists version
-supports upgrades/rollbacks
-becomes part of your environment
+- writes to system/user PATH
+- persists version
+- supports upgrades/rollbacks
+- becomes part of your environment
 
 - 👉 “I own this tool now”
 
 2. onix run
-no permanent install required
-no PATH modification required
-may use temporary directory or cache
-execution-first workflow
+- no permanent install required
+- no PATH modification required
+- may use temporary directory or cache
+- execution-first workflow
 
-👉 “let me try this tool right now”
+- 👉 “let me try this tool right now”
