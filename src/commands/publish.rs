@@ -15,7 +15,8 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
     Terminal,
 };
-use chrono::{Utc, DateTime};
+use chrono::Utc;
+use bytes::Bytes;
 use octocrab::models::workflows::Status;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -153,14 +154,36 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
 
         if !dry_run {
             println!("📤 Uploading install.onix to GitHub Release...");
-            octo.repos(&owner, &repo_name)
+            println!("   Release ID: {}", release.id);
+            println!("   Manifest size: {} bytes", manifest_content.len());
+            
+            // Convert to Bytes for octocrab
+            let body = Bytes::from(manifest_content.clone().into_bytes());
+            
+            match octo.repos(&owner, &repo_name)
                 .releases()
-                .upload_asset(*release.id, "install.onix", manifest_content.into())
+                .upload_asset(*release.id, "install.onix", body)
                 .send()
-                .await
-                .context("Failed to upload manifest to release")?;
+                .await {
+                Ok(asset) => {
+                    println!("✅ Manifest uploaded successfully!");
+                    println!("   Asset ID: {}", asset.id);
+                    println!("   Download URL: {}", asset.browser_download_url);
+                }
+                Err(e) => {
+                    eprintln!("\n❌ Failed to upload manifest to release: {}", e);
+                    eprintln!("   Writing manifest locally as fallback...");
+                    let local_path = format!("install-{}-{}.onix", repo_name, tag_name);
+                    fs::write(&local_path, &manifest_content)
+                        .with_context(|| format!("Failed to write fallback manifest to {}", local_path))?;
+                    println!("   ✅ Fallback manifest written to: {}", local_path);
+                    println!("   You can manually upload this file to the release.");
+                    // Don't fail the publish - the release is still usable
+                }
+            }
         } else {
             println!("✨ [DRY RUN] Skipping manifest upload to GitHub Release.");
+            println!("   Manifest would be:\n{}", manifest_content);
         }
             
         println!("🚀 Version {} successfully published!", config.app.version);
@@ -309,18 +332,46 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                             // This handles the edge case where run.status lags behind job statuses
                                             let is_done = progress == 100 && completed_jobs == total_jobs && total_jobs > 0;
                                             
+                                            if is_done {
+                                                // All jobs complete - wait 5 seconds for run.status to catch up, then force done
+                                                let _ = tx.send(CiUpdate::Update {
+                                                    progress,
+                                                    status: format!("🔨 All jobs complete! Waiting for GitHub... ({}/{})", completed_jobs, total_jobs),
+                                                    debug: current_debug,
+                                                    run_status: run_status.clone(),
+                                                }).await;
+                                                sleep(Duration::from_secs(5)).await;
+                                                
+                                                // Re-check run status one more time
+                                                let recheck = octo.workflows(&owner, &repo)
+                                                    .list_all_runs()
+                                                    .send()
+                                                    .await;
+                                                    
+                                                if let Ok(runs) = recheck {
+                                                    if let Some(run) = runs.items.iter().find(|r| r.id == run.id) {
+                                                        if run.status == "completed" {
+                                                            if run.conclusion.as_deref() == Some("success") {
+                                                                let _ = tx.send(CiUpdate::Done).await;
+                                                            } else {
+                                                                let _ = tx.send(CiUpdate::Error(format!("CI Finished with errors ({})", run.conclusion.as_deref().unwrap_or("unknown")))).await;
+                                                            }
+                                                            return;
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                // Force done after waiting
+                                                let _ = tx.send(CiUpdate::Done).await;
+                                                return;
+                                            }
+                                            
                                             let _ = tx.send(CiUpdate::Update {
                                                 progress,
                                                 status: format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs),
                                                 debug: current_debug,
                                                 run_status,
                                             }).await;
-                                            
-                                            if is_done {
-                                                // Give it one more poll cycle to let run.status catch up
-                                                sleep(Duration::from_secs(3)).await;
-                                                continue;
-                                            }
                                         }
                                     }
                                 }

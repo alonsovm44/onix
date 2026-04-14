@@ -19,3 +19,4 @@ git2 = "0.19"
 octocrab = "0.41"
 regex = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
+bytes = "1.0"
