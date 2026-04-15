@@ -2,7 +2,7 @@
   "config": {
     "app": {
       "name": "onix",
-      "version": "0.1.0"
+      "version": "0.1.10"
     },
     "build": {
       "entry": "src/main.rs",
@@ -59,7 +59,7 @@
       "args": [
         "commit",
         "-m",
-        "release: v0.1.0"
+        "release: v0.1.10"
       ],
       "success": true
     },
@@ -80,7 +80,7 @@
       "args": [
         "tag",
         "-f",
-        "v0.1.0"
+        "v0.1.10"
       ],
       "success": true
     },
@@ -88,7 +88,7 @@
       "args": [
         "push",
         "origin",
-        "v0.1.0",
+        "v0.1.10",
         "-f"
       ],
       "success": true
