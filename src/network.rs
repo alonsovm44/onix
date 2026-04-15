@@ -17,7 +17,7 @@ pub async fn resolve_url(input: &str) -> String {
             .build()
             .unwrap_or_default();
 
-        let main_url = format!("https://raw.githubusercontent.com/{}/{}/main/install.onix", user, repo);
+        let main_url = format!("https://raw.githubusercontent.com/{}/{}/main/.onix/install.onix", user, repo);
         
         // Check if the 'main' branch contains the manifest
         if let Ok(resp) = client.head(&main_url).send().await {
@@ -27,7 +27,7 @@ pub async fn resolve_url(input: &str) -> String {
         }
 
         // Default/Fallback to the 'master' branch
-        return format!("https://raw.githubusercontent.com/{}/{}/master/install.onix", user, repo);
+        return format!("https://raw.githubusercontent.com/{}/{}/master/.onix/install.onix", user, repo);
     }
 
     input.to_string()

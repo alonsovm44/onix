@@ -11,7 +11,7 @@ onix install user@repo-vX.Y.Z
 # Installs binary
 # Updates PATH
 
-onix inspect <url> # this is the dry run command
+onix inspect user@repo-vX.Y.Z # this is the dry run command
 # Fetches manifest
 # Parse + validate
 # Show install plan

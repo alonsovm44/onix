@@ -136,7 +136,41 @@ pub fn execute() -> Result<()> {
     let rendered_workflow = RELEASE_WORKFLOW_TEMPLATE.replace("{{BIN_NAME}}", &project_name);
     fs::write(workflow_path, rendered_workflow).context("Failed to write GitHub Action workflow file")?;
 
+    // Create stub install.onix manifest in .onix/
+    let manifest_path = onix_dir.join("install.onix");
+    if !manifest_path.exists() {
+        let stub_manifest = generate_stub_manifest(&default_config);
+        fs::write(&manifest_path, &stub_manifest).context("Failed to write .onix/install.onix")?;
+        println!("📝 Created stub install manifest at .onix/install.onix");
+    }
+
     println!("🚀 Successfully initialized at {:?}!", toolset_root);
-    println!("💡 Active binaries will be kept in the root, with older versions moved to the 'deprecated' subfolder.");
+    println!("💡 Run 'onix publish' to build, release, and update the install manifest.");
     Ok(())
+}
+
+/// Generates a stub install.onix with placeholder checksums.
+/// The real checksums and URLs will be filled in by `onix publish`.
+fn generate_stub_manifest(config: &AppConfig) -> String {
+    let mut install_on = Vec::new();
+    for target in &config.targets {
+        let extension = if target.os == "windows" { ".exe" } else { "" };
+        let filename = format!("{}-{}-{}{}", config.build.output_name, target.os, target.arch, extension);
+        install_on.push(format!(
+            "  - os: {}\n    arch: {}\n    url: https://github.com/OWNER/REPO/releases/download/v0.0.0/{}\n    sha256: PLACEHOLDER",
+            target.os, target.arch, filename
+        ));
+    }
+
+    format!(
+        "schema: \"1.0.0\"\napp: {}\nversion: {}\ninstall-on:\n{}\ninstallation:\n  file-type: {}\n  target-dir: {}\n  bin-name: {}\npermissions:\n  - type: filesystem\n    action: write\n    path: {}\n  - type: environment\n    action: modify\n    variable: PATH\nmessage: Run `{}` to get started\n",
+        config.app.name,
+        config.app.version,
+        install_on.join("\n"),
+        config.install.file_type,
+        config.install.target_dir,
+        config.install.bin_name,
+        config.install.target_dir,
+        config.install.bin_name
+    )
 }

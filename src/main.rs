@@ -3,6 +3,9 @@ use anyhow::Result;
 
 mod commands;
 mod manifest_generator;
+mod models;
+mod network;
+mod env;
 mod utils;
 
 #[derive(Parser)]

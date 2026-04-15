@@ -1,0 +1,32 @@
+schema: "1.0.0"
+app: onix
+version: 0.1.0
+install-on:
+  - os: linux
+    arch: x86_64
+    url: https://github.com/OWNER/REPO/releases/download/v0.0.0/onix-linux-x86_64
+    sha256: PLACEHOLDER
+  - os: macos
+    arch: arm64
+    url: https://github.com/OWNER/REPO/releases/download/v0.0.0/onix-macos-arm64
+    sha256: PLACEHOLDER
+  - os: macos
+    arch: x86_64
+    url: https://github.com/OWNER/REPO/releases/download/v0.0.0/onix-macos-x86_64
+    sha256: PLACEHOLDER
+  - os: windows
+    arch: x86_64
+    url: https://github.com/OWNER/REPO/releases/download/v0.0.0/onix-windows-x86_64.exe
+    sha256: PLACEHOLDER
+installation:
+  file-type: binary
+  target-dir: C:\onix
+  bin-name: onix
+permissions:
+  - type: filesystem
+    action: write
+    path: C:\onix
+  - type: environment
+    action: modify
+    variable: PATH
+message: Run `onix` to get started

@@ -16,8 +16,7 @@ use ratatui::{
     Terminal,
 };
 use chrono::Utc;
-use bytes::Bytes;
-use octocrab::models::workflows::Status;
+use octocrab::models::workflows::{Status, Conclusion};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute as cross_execute,
@@ -146,43 +145,27 @@ pub async fn execute(version_arg: Option<String>, debug: bool, dry_run: bool) ->
 
         let checksums = fetch_and_hash_assets(&config, &release).await?;
 
-        // 8. Generate and upload install.onix
-        println!("📝 Generating automated install manifest...");
+        // 8. Generate install.onix, write to .onix/, and push to repo
+        println!("📝 Generating install manifest...");
         let manifest_content = crate::manifest_generator::generate_install_manifest(
             &config, &owner, &repo_name, &tag_name, &checksums
         ).map_err(|e| anyhow!(e.to_string()))?;
 
         if !dry_run {
-            println!("📤 Uploading install.onix to GitHub Release...");
-            println!("   Release ID: {}", release.id);
-            println!("   Manifest size: {} bytes", manifest_content.len());
-            
-            // Convert to Bytes for octocrab
-            let body = Bytes::from(manifest_content.clone().into_bytes());
-            
-            match octo.repos(&owner, &repo_name)
-                .releases()
-                .upload_asset(*release.id, "install.onix", body)
-                .send()
-                .await {
-                Ok(asset) => {
-                    println!("✅ Manifest uploaded successfully!");
-                    println!("   Asset ID: {}", asset.id);
-                    println!("   Download URL: {}", asset.browser_download_url);
-                }
-                Err(e) => {
-                    eprintln!("\n❌ Failed to upload manifest to release: {}", e);
-                    eprintln!("   Writing manifest locally as fallback...");
-                    let local_path = format!("install-{}-{}.onix", repo_name, tag_name);
-                    fs::write(&local_path, &manifest_content)
-                        .with_context(|| format!("Failed to write fallback manifest to {}", local_path))?;
-                    println!("   ✅ Fallback manifest written to: {}", local_path);
-                    println!("   You can manually upload this file to the release.");
-                    // Don't fail the publish - the release is still usable
-                }
-            }
+            let manifest_path = ".onix/install.onix";
+            fs::write(manifest_path, &manifest_content)
+                .with_context(|| format!("Failed to write manifest to {}", manifest_path))?;
+            println!("✅ Manifest written to {}", manifest_path);
+
+            // Commit and push the updated manifest
+            println!("📤 Committing and pushing updated manifest...");
+            run_git(&["add", manifest_path], false, &mut report.git_ops)?;
+            let commit_msg = format!("chore: update install.onix for {}", tag_name);
+            let _ = run_git(&["commit", "-m", &commit_msg], false, &mut report.git_ops);
+            run_git(&["push"], false, &mut report.git_ops)?;
+            println!("✅ Manifest pushed to repository");
         } else {
-            println!("✨ [DRY RUN] Skipping manifest upload to GitHub Release.");
+            println!("✨ [DRY RUN] Skipping manifest write and push.");
             println!("   Manifest would be:\n{}", manifest_content);
         }
             
@@ -319,59 +302,46 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                     
                                     match run.status.as_str() {
                                         "completed" => {
-                                            if run.conclusion.as_deref() == Some("success") {
-                                                let _ = tx.send(CiUpdate::Done).await;
-                                                return;
-                                            } else {
-                                                let _ = tx.send(CiUpdate::Error(format!("CI Finished with errors ({})", run.conclusion.as_deref().unwrap_or("unknown")))).await;
-                                                return;
+                                            match run.conclusion.as_deref() {
+                                                Some("success") => {
+                                                    let _ = tx.send(CiUpdate::Done).await;
+                                                    return;
+                                                }
+                                                Some(other) => {
+                                                    let _ = tx.send(CiUpdate::Error(format!("CI Finished with status: {}", other))).await;
+                                                    return;
+                                                }
+                                                None => {
+                                                    let _ = tx.send(CiUpdate::Error("CI Finished with unknown conclusion".into())).await;
+                                                    return;
+                                                }
                                             }
                                         }
                                         _ => {
-                                            // Also consider done if all jobs are complete (progress 100%) 
-                                            // This handles the edge case where run.status lags behind job statuses
-                                            let is_done = progress == 100 && completed_jobs == total_jobs && total_jobs > 0;
-                                            
-                                            if is_done {
-                                                // All jobs complete - wait 5 seconds for run.status to catch up, then force done
+                                            // Check for failed/cancelled jobs early
+                                            let has_failed_job = jobs.items.iter().any(|j| {
+                                                matches!(j.conclusion, Some(Conclusion::Failure | Conclusion::Cancelled))
+                                            });
+                                            if has_failed_job {
+                                                let _ = tx.send(CiUpdate::Error("One or more CI jobs failed or were cancelled.".into())).await;
+                                                return;
+                                            }
+
+                                            if progress == 100 && total_jobs > 0 {
                                                 let _ = tx.send(CiUpdate::Update {
                                                     progress,
-                                                    status: format!("🔨 All jobs complete! Waiting for GitHub... ({}/{})", completed_jobs, total_jobs),
+                                                    status: format!("⌛ All jobs finished! Finalizing... ({}/{})", completed_jobs, total_jobs),
                                                     debug: current_debug,
                                                     run_status: run_status.clone(),
                                                 }).await;
-                                                sleep(Duration::from_secs(5)).await;
-                                                
-                                                // Re-check run status one more time
-                                                let recheck = octo.workflows(&owner, &repo)
-                                                    .list_all_runs()
-                                                    .send()
-                                                    .await;
-                                                    
-                                                if let Ok(runs) = recheck {
-                                                    if let Some(run) = runs.items.iter().find(|r| r.id == run.id) {
-                                                        if run.status == "completed" {
-                                                            if run.conclusion.as_deref() == Some("success") {
-                                                                let _ = tx.send(CiUpdate::Done).await;
-                                                            } else {
-                                                                let _ = tx.send(CiUpdate::Error(format!("CI Finished with errors ({})", run.conclusion.as_deref().unwrap_or("unknown")))).await;
-                                                            }
-                                                            return;
-                                                        }
-                                                    }
-                                                }
-                                                
-                                                // Force done after waiting
-                                                let _ = tx.send(CiUpdate::Done).await;
-                                                return;
+                                            } else {
+                                                let _ = tx.send(CiUpdate::Update {
+                                                    progress,
+                                                    status: format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs),
+                                                    debug: current_debug,
+                                                    run_status,
+                                                }).await;
                                             }
-                                            
-                                            let _ = tx.send(CiUpdate::Update {
-                                                progress,
-                                                status: format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs),
-                                                debug: current_debug,
-                                                run_status,
-                                            }).await;
                                         }
                                     }
                                 }
