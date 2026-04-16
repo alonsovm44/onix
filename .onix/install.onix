@@ -1,6 +1,6 @@
 schema: "1.0.0"
 app: onix
-version: 0.1.11
+version: 0.0.0
 install-on:
   - os: linux
     arch: x86_64

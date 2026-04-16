@@ -1,6 +1,6 @@
 app:
   name: onix
-  version: 0.1.11
+  version: 0.1.12
 build:
   entry: src/main.rs
   command: cargo build --release
