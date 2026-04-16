@@ -83,7 +83,7 @@ pub fn execute() -> Result<()> {
     let default_config = AppConfig {
         app: AppInfo {
             name: project_name.clone(),
-            version: "0.1.0".to_string(),
+            version: "0.0.0".to_string(),
         },
         build: BuildConfig {
             entry: "src/main.rs".to_string(),

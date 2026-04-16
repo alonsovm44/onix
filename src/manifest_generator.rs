@@ -61,9 +61,18 @@ pub fn generate_install_manifest(
         let extension = if target.os == "windows" { ".exe" } else { "" };
         let filename = format!("{}-{}-{}{}", config.build.output_name, target.os, target.arch, extension);
         let url = format!("https://github.com/{}/{}/releases/download/{}/{}", owner, repo, tag, filename);
-        let sha256 = binary_checksums.get(&(target.os.clone(), target.arch.clone()))
-            .ok_or_else(|| format!("SHA256 not found for target: {}/{}", target.os, target.arch))?.clone();
-        install_on_entries.push(crate::models::PlatformSource { os: target.os.clone(), arch: target.arch.clone(), url, sha256 });
+        match binary_checksums.get(&(target.os.clone(), target.arch.clone())) {
+            Some(sha256) => {
+                install_on_entries.push(crate::models::PlatformSource { os: target.os.clone(), arch: target.arch.clone(), url, sha256: sha256.clone() });
+            }
+            None => {
+                eprintln!("⚠️  Skipping {}/{} in manifest — no checksum available", target.os, target.arch);
+            }
+        }
+    }
+
+    if install_on_entries.is_empty() {
+        return Err("No targets with checksums available for manifest".into());
     }
 
     // Convert from config types to manifest types (kebab-case field names)
