@@ -68,7 +68,30 @@
         "pull",
         "--rebase"
       ],
-      "success": false
+      "success": true
+    },
+    {
+      "args": [
+        "push"
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "tag",
+        "-f",
+        "v0.1.12"
+      ],
+      "success": true
+    },
+    {
+      "args": [
+        "push",
+        "origin",
+        "v0.1.12",
+        "-f"
+      ],
+      "success": true
     }
   ],
   "repo_info": [

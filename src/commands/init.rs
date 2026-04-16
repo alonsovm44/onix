@@ -21,6 +21,7 @@ jobs:
     name: Build and Release
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -29,8 +30,6 @@ jobs:
             target: linux-x86_64
           - os: macos-latest
             target: macos-arm64
-          - os: macos-13
-            target: macos-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +92,6 @@ pub fn execute() -> Result<()> {
         targets: vec![
             TargetConfig { os: "linux".to_string(), arch: "x86_64".to_string() },
             TargetConfig { os: "macos".to_string(), arch: "arm64".to_string() },
-            TargetConfig { os: "macos".to_string(), arch: "x86_64".to_string() },
             TargetConfig { os: "windows".to_string(), arch: "x86_64".to_string() },
         ],
         install: InstallConfig {

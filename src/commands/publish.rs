@@ -309,42 +309,46 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                     
                                     match run.status.as_str() {
                                         "completed" => {
-                                            match run.conclusion.as_deref() {
-                                                Some("success") => {
-                                                    let _ = tx.send(CiUpdate::Done).await;
-                                                    return;
+                                            let succeeded = jobs.items.iter().filter(|j| j.conclusion == Some(Conclusion::Success)).count();
+                                            let failed = jobs.items.iter().filter(|j| matches!(j.conclusion, Some(Conclusion::Failure | Conclusion::Cancelled))).count();
+
+                                            if succeeded > 0 {
+                                                if failed > 0 {
+                                                    let _ = tx.send(CiUpdate::Update {
+                                                        progress: 100,
+                                                        status: format!("⚠️ CI completed: {}/{} jobs succeeded, {} failed. Proceeding with available assets.", succeeded, total_jobs, failed),
+                                                        debug: current_debug,
+                                                        run_status: "partial".into(),
+                                                    }).await;
                                                 }
-                                                Some(other) => {
-                                                    let _ = tx.send(CiUpdate::Error(format!("CI Finished with status: {}", other))).await;
-                                                    return;
-                                                }
-                                                None => {
-                                                    let _ = tx.send(CiUpdate::Error("CI Finished with unknown conclusion".into())).await;
-                                                    return;
-                                                }
+                                                let _ = tx.send(CiUpdate::Done).await;
+                                                return;
+                                            } else {
+                                                let _ = tx.send(CiUpdate::Error(format!("All CI jobs failed or were cancelled (0/{} succeeded)", total_jobs))).await;
+                                                return;
                                             }
                                         }
                                         _ => {
-                                            // Check for failed/cancelled jobs early
-                                            let has_failed_job = jobs.items.iter().any(|j| {
-                                                matches!(j.conclusion, Some(Conclusion::Failure | Conclusion::Cancelled))
-                                            });
-                                            if has_failed_job {
-                                                let _ = tx.send(CiUpdate::Error("One or more CI jobs failed or were cancelled.".into())).await;
-                                                return;
-                                            }
+                                            // Don't abort on individual failed jobs — wait for the full run to complete
+                                            // Some jobs may fail but others still succeed and upload assets
+                                            let failed = jobs.items.iter().filter(|j| matches!(j.conclusion, Some(Conclusion::Failure | Conclusion::Cancelled))).count();
+                                            let status_suffix = if failed > 0 {
+                                                format!(" ({} failed so far)", failed)
+                                            } else {
+                                                String::new()
+                                            };
 
                                             if progress == 100 && total_jobs > 0 {
                                                 let _ = tx.send(CiUpdate::Update {
                                                     progress,
-                                                    status: format!("⌛ All jobs finished! Finalizing... ({}/{})", completed_jobs, total_jobs),
+                                                    status: format!("⌛ All jobs finished! Finalizing... ({}/{}){}", completed_jobs, total_jobs, status_suffix),
                                                     debug: current_debug,
                                                     run_status: run_status.clone(),
                                                 }).await;
                                             } else {
                                                 let _ = tx.send(CiUpdate::Update {
                                                     progress,
-                                                    status: format!("🔨 CI Status: {} ({}/{})", run.status, completed_jobs, total_jobs),
+                                                    status: format!("🔨 CI Status: {} ({}/{}){}", run.status, completed_jobs, total_jobs, status_suffix),
                                                     debug: current_debug,
                                                     run_status,
                                                 }).await;
