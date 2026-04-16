@@ -18,7 +18,7 @@ impl OnixManifest {
     pub fn find_source(&self) -> Option<&PlatformSource> {
         let current_os = std::env::consts::OS;
         let current_arch = match std::env::consts::ARCH {
-            "x86_64" => "amd64",
+            "x86_64" => "x86_64",
             "aarch64" => "arm64",
             arch => arch,
         };
