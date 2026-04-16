@@ -287,8 +287,15 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                                     let jobs = match octo.workflows(&owner, &repo).list_jobs(run.id).send().await {
                                         Ok(j) => j,
                                         Err(e) => {
-                                            let _ = tx.send(CiUpdate::Error(format!("Job fetch failed: {}", e))).await;
-                                            return;
+                                            // Transient network error — retry on next poll cycle
+                                            let _ = tx.send(CiUpdate::Update {
+                                                progress: 0,
+                                                status: format!("⚠️ Job fetch failed (will retry): {}", e),
+                                                debug: current_debug.clone(),
+                                                run_status: "retrying".into(),
+                                            }).await;
+                                            last_api_poll = Instant::now() - Duration::from_secs(3); // retry sooner
+                                            continue;
                                         }
                                     };
                                     
@@ -356,8 +363,14 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(CiUpdate::Error(format!("Poll failed: {}", e))).await;
-                            return;
+                            // Transient network error — retry instead of aborting
+                            let _ = tx.send(CiUpdate::Update {
+                                progress: 0,
+                                status: format!("⚠️ API poll failed (will retry): {}", e),
+                                debug: format!("Retrying after network error..."),
+                                run_status: "retrying".into(),
+                            }).await;
+                            continue;
                         }
                     }
                     last_api_poll = Instant::now();
