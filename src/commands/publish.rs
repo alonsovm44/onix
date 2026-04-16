@@ -433,13 +433,19 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
                     .block(Block::default().title("Activity").borders(Borders::ALL));
                 f.render_widget(paragraph, chunks[1]);
             })?;
-            
-            sleep(Duration::from_millis(50)).await;
-        }
+        
+        sleep(Duration::from_millis(50)).await;
+    }
     }.await;
 
     // Teardown TUI: This code is now guaranteed to run
     let _ = disable_raw_mode();
+    let _ = cross_execute!(io::stdout(), LeaveAlternateScreen);
+    
+    poll_result
+}
+
+async fn fetch_and_hash_assets(
     config: &AppConfig,
     release: &octocrab::models::repos::Release,
 ) -> Result<HashMap<(String, String), String>> {
@@ -454,6 +460,70 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
         if attempt > 1 {
             println!("⏳ Waiting for remaining assets to upload (attempt {}/{})...", attempt, max_retries);
             sleep(Duration::from_secs(15 * attempt as u64)).await;
+        }
+
+        for target in &config.targets {
+            let key = (target.os.clone(), target.arch.clone());
+            if checksums.contains_key(&key) {
+                continue;
+            }
+
+            let asset_name = format!("{}-{}-{}", config.build.output_name, target.os, target.arch);
+            let is_macos = target.os == "macos";
+
+            let asset = release.assets.iter()
+                .find(|a| a.name == asset_name || a.name == format!("{}.exe", asset_name) || (is_macos && a.name == asset_name.replace("macos", "darwin")));
+
+            let Some(asset) = asset else {
+                if attempt == max_retries {
+                    println!("⚠️  Asset {} not found in release after {} attempts — skipping", asset_name, max_retries);
+                }
+                continue;
+            };
+
+            let file_path = temp_dir.join(&asset.name);
+            match client.get(asset.browser_download_url.clone()).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.bytes().await {
+                        Ok(bytes) => {
+                            fs::write(&file_path, &bytes)?;
+                            match crate::manifest_generator::calculate_sha256(&file_path) {
+                                Ok(hash) => {
+                                    println!("✅ Hashed {} -> {}...", asset.name, &hash[..16]);
+                                    checksums.insert(key, hash);
+                                    let _ = fs::remove_file(&file_path);
+                                }
+                                Err(e) => println!("⚠️  Failed to hash {}: {}", asset.name, e),
+                            }
+                        }
+                        Err(e) => println!("⚠️  Failed to read bytes for {}: {}", asset.name, e),
+                    }
+                }
+                Ok(resp) => println!("⚠️  Download failed for {}: HTTP {}", asset.name, resp.status()),
+                Err(e) => println!("⚠️  Download error for {}: {}", asset.name, e),
+            }
+        }
+
+        if checksums.len() == config.targets.len() {
+            break;
+        }
+    }
+
+    if checksums.is_empty() {
+        return Err(anyhow!("No release assets could be fetched and hashed. Check CI build status."));
+    }
+
+    if checksums.len() < config.targets.len() {
+        println!("⚠️  Only {}/{} assets were found. The manifest will include only the available platforms.", checksums.len(), config.targets.len());
+    }
+
+    Ok(checksums)
+}
+
+/// Helper to run git commands and handle errors.
+fn run_git(args: &[&str], dry_run: bool, log: &mut Vec<GitOpLog>) -> Result<()> {
+    let success = if dry_run {
+        println!("  [DRY RUN] git {}", args.join(" "));
         true
     } else {
         Command::new("git")
@@ -476,12 +546,10 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
 
 /// Retrieves the GitHub token from the environment or prompts the user with masked input.
 fn get_github_token() -> Result<String> {
-    // 1. Check Environment Variable
     if let Ok(token) = env::var("GITHUB_TOKEN") {
         return Ok(token);
     }
 
-    // 2. Check Local File
     let token_path = Path::new(".onix/token.key");
     if token_path.exists() {
         let token = fs::read_to_string(token_path)?.trim().to_string();
@@ -495,8 +563,6 @@ fn get_github_token() -> Result<String> {
     io::stdout().flush()?;
 
     enable_raw_mode()?;
-    
-    // Drain any leftover events (like an Enter release from a previous command)
     while event::poll(Duration::from_millis(0))? {
         let _ = event::read();
     }
@@ -527,7 +593,6 @@ fn get_github_token() -> Result<String> {
         return Err(anyhow!("GitHub token cannot be empty."));
     }
 
-    // 3. Save for future use
     save_token(&token)?;
     Ok(token)
 }
@@ -542,7 +607,6 @@ fn save_token(token: &str) -> Result<()> {
     let token_file = dot_onix.join("token.key");
     fs::write(&token_file, token)?;
     
-    // Ensure the token is in .gitignore
     let gitignore_path = Path::new(".gitignore");
     let pattern = ".onix/token.key";
     
@@ -567,4 +631,4 @@ fn save_token(token: &str) -> Result<()> {
 
     println!("💾 Token saved locally to {}", token_file.display());
     Ok(())
-} 
+}
