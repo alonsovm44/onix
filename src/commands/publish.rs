@@ -440,12 +440,6 @@ async fn poll_ci_status(octo: &octocrab::Octocrab, owner: &str, repo: &str, tag:
 
     // Teardown TUI: This code is now guaranteed to run
     let _ = disable_raw_mode();
-    let _ = cross_execute!(io::stdout(), LeaveAlternateScreen);
-    
-    poll_result
-}
-
-async fn fetch_and_hash_assets(
     config: &AppConfig,
     release: &octocrab::models::repos::Release,
 ) -> Result<HashMap<(String, String), String>> {
@@ -454,33 +448,12 @@ async fn fetch_and_hash_assets(
     let temp_dir = env::temp_dir().join("onix_publish");
     fs::create_dir_all(&temp_dir)?;
 
-    for target in &config.targets {
-        let asset_name = format!("{}-{}-{}", config.build.output_name, target.os, target.arch);
-        // Fallback check for macOS (often named 'darwin')
-        let is_macos = target.os == "macos";
-        
-        let asset = release.assets.iter()
-            .find(|a| a.name == asset_name || a.name == format!("{}.exe", asset_name) || (is_macos && a.name == asset_name.replace("macos", "darwin")))
-            .ok_or_else(|| anyhow!("Asset {} not found in release", asset_name))?;
-
-        let file_path = temp_dir.join(&asset.name);
-        let resp = client.get(asset.browser_download_url.clone()).send().await?;
-        let bytes = resp.bytes().await?;
-        fs::write(&file_path, bytes)?;
-
-        let hash = crate::manifest_generator::calculate_sha256(&file_path)
-            .map_err(|e| anyhow!(e.to_string()))?;
-        
-        checksums.insert((target.os.clone(), target.arch.clone()), hash);
-        fs::remove_file(file_path)?;
-    }
-    Ok(checksums)
-}
-
-/// Helper to run git commands and handle errors.
-fn run_git(args: &[&str], dry_run: bool, log: &mut Vec<GitOpLog>) -> Result<()> {
-    let success = if dry_run {
-        println!("  [DRY RUN] git {}", args.join(" "));
+    // Retry up to 3 times with a delay — some assets may not be uploaded yet
+    let max_retries = 3;
+    for attempt in 1..=max_retries {
+        if attempt > 1 {
+            println!("⏳ Waiting for remaining assets to upload (attempt {}/{})...", attempt, max_retries);
+            sleep(Duration::from_secs(15 * attempt as u64)).await;
         true
     } else {
         Command::new("git")
